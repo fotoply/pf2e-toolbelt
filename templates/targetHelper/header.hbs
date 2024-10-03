@@ -19,7 +19,7 @@
         <span class="degree {{#if showSuccess}}show{{/if}} {{save.result.success}}">
             {{save.result.value}}
         </span>
-        <i class="fa-solid fa-rotate rotate"></i>
+        <button class="fa-solid fa-rotate rotate" style="width: auto;"></button>
     </a>
     {{else}}
     <span class="observe" data-tooltip="{{save.result.tooltip}}" {{#if
@@ -40,10 +40,10 @@
     {{else if save}}
 
     {{#if isOwner}}
-    <a data-action="roll-save" data-statistic="{{save.statistic}}" data-tooltip="{{save.tooltip}}">
+    <div data-action="roll-save" data-statistic="{{save.statistic}}" data-tooltip="{{save.tooltip}}">
         <i class="save {{save.icon}}"></i>
-        <i class="fa-solid fa-dice-d20 die"></i>
-    </a>
+        <button class="fa-solid fa-dice-d20 die" style="width: auto;"></button>
+    </div>
     {{else}}
     <span data-tooltip="{{save.tooltip}}">
         <i class="save {{save.icon}}"></i>
