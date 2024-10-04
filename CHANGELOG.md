@@ -1,3 +1,13 @@
+# 2.18.0
+
+-   `Hide Damage`:
+    -   you can now click on the total number to reveal it to all players
+-   `Target Helper`:
+    -   clicking the message save button will now first try to roll the inline save for the selected tokens instead of rolling a regular system save
+        -   this works for both spell and prompted check messages
+        -   if more than one token is selected, it will roll for each one of them that is a target of the message (and hasn't rolled its save yet) and roll regular system saves for the other ones
+        -   if the token of a target that has already rolled its save is selected, a regular system save will be rolled instead
+
 # 2.17.0
 
 -   `Better Browser`:
