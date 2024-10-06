@@ -46,7 +46,6 @@
                     .pf2e-toolbelt-target-toggleDamageRows {
                         width: 22px;
                         height: 22px;
-                        line-height: 1px;
                         display: flex;
                         align-items: center;
                         justify-content: center;
@@ -113,7 +112,6 @@
                 align-items: center;
                 justify-content: space-between;
                 padding-right: 0.5em;
-                font-size: 0.9em;
                 gap: 0.5em;
                 height: 1.3em;
 
@@ -134,15 +132,7 @@
 
                         &.fa-person {
                             font-size: 1.1em;
-                        }
-
-                        &.fa-eye-slash {
-                            font-size: 0.9em;
-                            margin-bottom: 1px;
-                        }
-
-                        &.fa-ghost {
-                            font-size: 0.95em;
+                            margin-top: -1px;
                         }
                     }
                 }
@@ -163,8 +153,9 @@
                     }
 
                     .degree {
-                        font-size: 1.2em;
+                        font-size: 1.1em;
                         line-height: 1;
+                        margin-right: 0.1em;
 
                         &.show {
                             &.criticalSuccess {
@@ -298,7 +289,7 @@
 
                 &.small {
                     button {
-                        height: 1em;
+                        height: 1.1em;
                         padding-block: 0.1em;
 
                         img,
