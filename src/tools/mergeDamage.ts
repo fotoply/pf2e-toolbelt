@@ -4,6 +4,7 @@ import {
     addListenerAll,
     compareArrays,
     createHTMLElement,
+    getActiveModule,
     getDamageRollClass,
     htmlQuery,
     latestChatMessages,
@@ -12,31 +13,52 @@ import {
 import { createTool } from "../tool";
 import { getMessageTargets, setTargetHelperFlagProperty } from "./targetHelper";
 
-const { config, settings, hook, localize, getFlag, render, setFlagProperty } = createTool({
-    name: "mergeDamage",
-    settings: [
-        {
-            key: "enabled",
-            type: Boolean,
-            default: false,
-            scope: "client",
-            onChange: (value) => {
-                hook.toggle(value);
-                refreshLatestMessages(20);
+const { config, settings, hooks, localize, getFlag, render, setFlagProperty, deleteFlagProperty } =
+    createTool({
+        name: "mergeDamage",
+        settings: [
+            {
+                key: "enabled",
+                type: Boolean,
+                default: false,
+                scope: "client",
+                onChange: (value: boolean) => {
+                    hooks.renderChatMessage.toggle(value);
+                    refreshLatestMessages(20);
+                },
             },
+        ],
+        hooks: [
+            {
+                event: "renderChatMessage",
+                listener: onRenderChatMessage,
+            },
+            {
+                event: "diceSoNiceMessageProcessed",
+                listener: onDiceSoNiceMessageProcessed,
+            },
+        ],
+        init: () => {
+            if (getActiveModule("dice-so-nice")) {
+                hooks.diceSoNiceMessageProcessed.activate();
+            }
+
+            if (settings.enabled) {
+                hooks.renderChatMessage.activate();
+                refreshLatestMessages(20);
+            }
         },
-    ],
-    hooks: [
-        {
-            event: "renderChatMessage",
-            listener: onRenderChatMessage,
-        },
-    ],
-    init: () => {
-        hook.toggle(settings.enabled);
-        refreshLatestMessages(20);
-    },
-} as const);
+    } as const);
+
+function onDiceSoNiceMessageProcessed(
+    messageId: string,
+    interception: { willTrigger3DRoll: boolean }
+) {
+    const message = game.messages.get(messageId);
+    if (!message || (!getFlag(message, "merged") && !getFlag(message, "splitted"))) return;
+
+    interception.willTrigger3DRoll = false;
+}
 
 async function onRenderChatMessage(message: ChatMessagePF2e, $html: JQuery) {
     const actor = message.actor;
@@ -88,11 +110,20 @@ async function onRenderChatMessage(message: ChatMessagePF2e, $html: JQuery) {
 
             case "split-damage": {
                 const flag = getFlag<MessageData[]>(message, "data");
-                const sources = flag?.flatMap((data) => data.source);
-                if (sources) {
+                const sources = flag?.flatMap((data) => {
+                    const source = data.source;
+
+                    source.sound = null;
+                    setFlagProperty(source, "splitted", true);
+
+                    return source;
+                });
+
+                if (sources?.length) {
                     await message.delete();
                     getDocumentClass("ChatMessage").createDocuments(sources);
                 }
+
                 break;
             }
         }
@@ -221,13 +252,12 @@ function groupRolls(message: ChatMessagePF2e, otherMessage: ChatMessagePF2e) {
 function setMessageUpdateFlags(
     update: Record<string, unknown>,
     message: ChatMessagePF2e,
-    data: MessageData[],
-    injected: boolean
+    data: MessageData[]
 ) {
     setTargetHelperFlagProperty(update, "targets", getTargets(message));
 
     setFlagProperty(update, "type", "damage-roll");
-    setFlagProperty(update, injected ? "injected" : "merged", true);
+    setFlagProperty(update, "merged", true);
     setFlagProperty(update, "data", data);
 }
 
@@ -239,7 +269,7 @@ async function injectDamage(message: ChatMessagePF2e, otherMessage: ChatMessageP
 
     const update = { rolls };
 
-    setMessageUpdateFlags(update, otherMessage, data, true);
+    setMessageUpdateFlags(update, otherMessage, data);
     setFlagProperty(update, "injected", true);
 
     otherMessage.update(update);
@@ -299,9 +329,10 @@ async function mergeDamages(message: ChatMessagePF2e, otherMessage: ChatMessageP
             },
         },
         rolls,
+        sound: null,
     };
 
-    setMessageUpdateFlags(messageData, message, data, false);
+    setMessageUpdateFlags(messageData, message, data);
 
     getDocumentClass("ChatMessage").create(messageData);
 }
@@ -326,8 +357,10 @@ function getMessageData(message: ChatMessagePF2e): MessageData[] {
     if (flag) return flag;
 
     const source = message.toObject() as PreCreate<ChatMessageSourcePF2e>;
+
     delete source._id;
     delete source.timestamp;
+    deleteFlagProperty(source, "splitted");
 
     const sourceFlag = source.flags!.pf2e as ChatMessageFlagsPF2e["pf2e"] & {
         context: DamageDamageContextFlag | SpellCastContextFlag;
