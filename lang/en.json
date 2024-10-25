@@ -170,10 +170,6 @@
             },
             "useButton": {
                 "title": "Use Button",
-                "actions": {
-                    "name": "Add To Actions",
-                    "hint": "Will add an extra 'use' button to action that have uses."
-                },
                 "consumables": {
                     "name": "Add To Consumables",
                     "hint": "Will add an extra 'use' button to consumables."
@@ -239,13 +235,6 @@
                 "identifyPartials": {
                     "name": "Auto Identify Similar Items",
                     "hint": "Should 'similar' items also be identified when using the 'Automatically identify known items' option."
-                }
-            },
-            "betterBrowser": {
-                "title": "Better Browser",
-                "noDuplicates": {
-                    "name": "Remove Bestiary Duplicates",
-                    "hint": "Will remove creatures from the original 3 'Pathfinder Bestiary' that have a version with the same name in the 'Pathfinder Monster Core'."
                 }
             }
         },
@@ -381,8 +370,8 @@
                     "hint": "Share health & stamina points with its master."
                 },
                 "turn": {
-                    "label": "Turn Start/End",
-                    "hint": "Whenever the master's turn starts/ends, the events will also be triggered for this actor if it isn't part of the current encounter."
+                    "label": "Time Events",
+                    "hint": "Whenever the master's turn starts/ends, initiative changes or rest for the night, the events will also be triggered for this actor."
                 },
                 "skills": {
                     "label": "Skills Proficiencies",
