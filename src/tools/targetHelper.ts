@@ -452,7 +452,7 @@ async function actionChatMessageGetHtml(message: ChatMessagePF2e, html: HTMLElem
         footer.append(rollSavesBtn);
     }
 
-    addSaveHeaders(data, message, msgContent);
+    addSaveHeaders(data, message, msgContent, html);
 }
 
 async function checkMessageGetHTML(message: ChatMessagePF2e, html: HTMLElement) {
@@ -500,7 +500,7 @@ async function checkMessageGetHTML(message: ChatMessagePF2e, html: HTMLElement) 
         }
     }
 
-    addSaveHeaders(data, message, msgContent);
+    addSaveHeaders(data, message, msgContent, html);
 
     const fakeBtn = htmlQuery<HTMLButtonElement>(msgContent, "[data-action='roll-fake-check']");
     if (fakeBtn) {
@@ -537,8 +537,11 @@ async function damageChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElem
     if (!msgContent) return;
 
     const damageRows = htmlQueryAll(msgContent, ".damage-application");
-    const diceTotalElement = msgContent.querySelectorAll(".dice-result .dice-total");
-    if (!damageRows.length || !diceTotalElement.length) return;
+    const diceTotalElements = msgContent.querySelectorAll(".dice-result .dice-total");
+    const wrappersParents = diceTotalElements.length
+        ? diceTotalElements
+        : msgContent.querySelectorAll(".dice-result .dice-formula");
+    if (!damageRows.length && !wrappersParents.length) return;
 
     const data = await getMessageData(message);
     const wrapper = createHTMLElement("div", { classes: ["pf2e-toolbelt-target-buttons"] });
@@ -581,7 +584,7 @@ async function damageChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElem
 
             setSplashTargetBtn.title = localize("setSplashTargets");
 
-            diceTotalElement[splashIndex]?.append(splashWrapper);
+            wrappersParents[splashIndex].append(splashWrapper);
 
             splashWrapper.append(setSplashTargetBtn);
             addSetTargetsListener(setSplashTargetBtn, message, "splashTargets");
@@ -593,10 +596,10 @@ async function damageChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElem
         wrapper.append(rollSavesBtn);
     }
 
-    diceTotalElement[0].append(wrapper);
+    wrappersParents[0].append(wrapper);
 
     if (hasSplashDamage) {
-        diceTotalElement[splashIndex].append(splashWrapper);
+        wrappersParents[splashIndex].append(splashWrapper);
     }
 
     if (!hasTargets && !hasSplashTargets) return;
@@ -695,11 +698,92 @@ async function damageChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElem
 
     msgContent.after(rowsWrapper);
 
-    addHeaderListeners(message, rowsWrapper, data.save);
+    addChatMessageListeners(message, rowsWrapper, data.save);
 
     addListenerAll(rowsWrapper, "[data-action^='target-']", (event, btn: HTMLButtonElement) =>
         onTargetButton(event, btn, message)
     );
+}
+
+let lastClickTime = Date.now();
+async function addChatMessageListeners(
+    message: ChatMessagePF2e,
+    wrapper: HTMLElement,
+    save: MessageSaveDataWithTooltip | undefined
+) {
+    const emitTokenHover = (event: MouseEvent, target: TokenDocumentPF2e, hover: boolean) => {
+        if (!canvas.ready) return;
+
+        const token = target?.object;
+
+        if (hover && token?.isVisible && !token.controlled) {
+            token.emitHoverIn(event);
+        } else if (!hover) {
+            target?.object?.emitHoverOut(event);
+        }
+    };
+
+    const targetElements = wrapper.querySelectorAll<HTMLElement>(
+        ".target-header[data-target-uuid]"
+    );
+    for (const targetElement of targetElements) {
+        const { targetUuid } = elementDataset(targetElement);
+        const target = await fromUuid(targetUuid);
+        if (!isValidToken(target)) continue;
+
+        targetElement.addEventListener("mouseenter", async (event) => {
+            emitTokenHover(event, target, true);
+        });
+
+        targetElement.addEventListener("mouseleave", async (event) => {
+            emitTokenHover(event, target, false);
+        });
+
+        targetElement.addEventListener("dragenter", (event) => {
+            targetElement.classList.add("highlight");
+            emitTokenHover(event, target, true);
+        });
+
+        targetElement.addEventListener("dragleave", (event) => {
+            const relatedTarget = event.relatedTarget as HTMLElement | null;
+            if (relatedTarget && targetElement.contains(relatedTarget)) return;
+
+            targetElement.classList.remove("highlight");
+            emitTokenHover(event, target, false);
+        });
+
+        targetElement.addEventListener("drop", (event) => {
+            targetElement.classList.remove("highlight");
+            target.actor?.sheet._onDrop(event);
+        });
+
+        addListener(targetElement, "[data-action='ping-target']", () => {
+            canvas.ping(target.center);
+        });
+
+        addListener(targetElement, "[data-action='select-target']", (event) => {
+            const now = Date.now();
+            const dt = now - lastClickTime;
+
+            lastClickTime = now;
+
+            if (dt <= 250) {
+                return target.actor?.sheet.render(true);
+            }
+
+            target.object?.control({ releaseOthers: true });
+        });
+
+        if (save) {
+            addListener(targetElement, "[data-action='roll-save']", (event) => {
+                rollSaves(event, message, save, [target]);
+            });
+
+            addListener(targetElement, "[data-action='reroll-save']", (event) => {
+                rerollSave(event, message, save, target);
+            });
+        }
+    }
 }
 
 function isValidCheckLink(el: Maybe<Element | EventTarget>): el is HTMLAnchorElement & {
@@ -898,7 +982,12 @@ function isBasicSave(
     return !!(save?.result && save.basic);
 }
 
-function addSaveHeaders(data: MessageData, message: ChatMessagePF2e, afterElement: HTMLElement) {
+function addSaveHeaders(
+    data: MessageData,
+    message: ChatMessagePF2e,
+    afterElement: HTMLElement,
+    html: HTMLElement
+) {
     const { targets, save } = data;
     if (!targets.length) return;
 
@@ -918,7 +1007,7 @@ function addSaveHeaders(data: MessageData, message: ChatMessagePF2e, afterElemen
 
     afterElement.after(rowsWrapper);
 
-    addHeaderListeners(message, rowsWrapper, save);
+    addChatMessageListeners(message, rowsWrapper, save);
 }
 
 async function spellChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElement) {
@@ -959,7 +1048,7 @@ async function spellChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLEleme
 
     cardBtns.prepend(wrapper);
 
-    addSaveHeaders(data, message, msgContent);
+    addSaveHeaders(data, message, msgContent, html);
 }
 
 function linkSaveBtns(
@@ -1085,38 +1174,6 @@ function createSetTargetsBtn(message: ChatMessagePF2e, isAnchor = false) {
     addSetTargetsListener(btnElement, message);
 
     return btnElement;
-}
-
-async function addHeaderListeners(
-    message: ChatMessagePF2e,
-    html: HTMLElement,
-    save?: MessageSaveDataWithTooltip
-) {
-    const targetElements = html.querySelectorAll<HTMLElement>("[data-target-uuid]");
-
-    for (const targetElement of targetElements) {
-        const { targetUuid } = elementDataset(targetElement);
-        const target = await fromUuid(targetUuid);
-        if (!isValidToken(target)) continue;
-
-        addListener(targetElement, "[data-action='ping-target']", () => {
-            canvas.ping(target.center);
-        });
-
-        addListener(targetElement, "[data-action='open-target-sheet']", () => {
-            target.actor?.sheet.render(true);
-        });
-
-        if (save) {
-            addListener(targetElement, "[data-action='roll-save']", (event) => {
-                rollSaves(event, message, save, [target]);
-            });
-
-            addListener(targetElement, "[data-action='reroll-save']", (event) => {
-                rerollSave(event, message, save, target);
-            });
-        }
-    }
 }
 
 async function rollSaves(
