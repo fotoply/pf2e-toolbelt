@@ -1,3 +1,20 @@
+# 2.23.0
+
+-   `Identify`:
+    -   fix spellcasting entries other than prepared & spontaneous being used to check if a character can use recall knowledge to identify a scroll/wand
+-   some internal changes
+
+# 2.22.4
+
+-   `Target Helper`:
+    -   fix damage buttons being highlighted or blurred even when the `Show Check Outcomes` metagame setting is disabled
+
+# 2.22.3
+
+-   `Target Helper`:
+    -   fix save result generated for unobservable origin actors
+        -   this impact the tooltip & the degree of success buttons color
+
 # 2.22.2
 
 -   `Target Helper`:

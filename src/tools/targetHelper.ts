@@ -1,10 +1,26 @@
 import {
+    AbilityTrait,
+    ActorPF2e,
+    CharacterPF2e,
+    ChatMessagePF2e,
+    CheckContextChatFlag,
+    CheckRoll,
+    CreaturePF2e,
     DEGREE_OF_SUCCESS_STRINGS,
+    DamageRoll,
+    DegreeAdjustmentsRecord,
     DegreeOfSuccess,
+    DegreeOfSuccessString,
+    ItemPF2e,
     MODULE,
     R,
+    RawModifier,
     RollNotePF2e,
     SAVE_TYPES,
+    SaveType,
+    SpellPF2e,
+    StatisticRollParameters,
+    TokenDocumentPF2e,
     actorItems,
     addListener,
     addListenerAll,
@@ -31,7 +47,7 @@ import {
     toggleOffShieldBlock,
     updateFlag,
     userIsActiveGM,
-} from "foundry-pf2e";
+} from "module-helpers";
 import { createTool } from "../tool";
 import { CHATMESSAGE_GET_HTML } from "./shared/chatMessage";
 import { TEXTEDITOR_ENRICH_HTML } from "./shared/textEditor";
@@ -234,7 +250,7 @@ function isDamageMessage(
 }
 
 function isActionMessage(message: ChatMessagePF2e) {
-    const type = message.getFlag<string>("pf2e", "origin.type");
+    const type = message.getFlag("pf2e", "origin.type") as string | undefined;
     return !!type && ["feat", "action"].includes(type);
 }
 
@@ -265,7 +281,7 @@ function getCheckLinkData(message: ChatMessagePF2e): SaveLinkData | null {
         const rawParams = parseInlineParams(paramString, { first: "type" });
         if (!rawParams) return null;
 
-        const statistic = rawParams.type?.trim();
+        const statistic = rawParams.type?.trim() as SaveType;
         const dc = Number(rawParams.dc);
         if (!SAVE_TYPES.includes(statistic) || isNaN(dc)) return null;
 
@@ -635,6 +651,14 @@ async function damageChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElem
         return clone;
     });
 
+    const originActor = message.actor;
+    const showResults =
+        isGM ||
+        game.pf2e.settings.metagame.results ||
+        !originActor ||
+        originActor.isOwner ||
+        originActor.hasPlayerOwner;
+
     const rowsWrapper = createHTMLElement("div", {
         classes: ["pf2e-toolbelt-target-targetRows", "pf2e-toolbelt-target-damage"],
     });
@@ -665,7 +689,8 @@ async function damageChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElem
 
             clone.classList.toggle(
                 "applied",
-                !!applied[i] || (isBasic && save.result.success === "criticalSuccess")
+                !!applied[i] ||
+                    (isBasic && save.result.success === "criticalSuccess" && showResults)
             );
 
             if (isBasic) {
@@ -699,7 +724,9 @@ async function damageChatMessageGetHTML(message: ChatMessagePF2e, html: HTMLElem
                     return save.result.success;
                 })();
 
-                clone.classList.add(success);
+                if (showResults) {
+                    clone.classList.add(success);
+                }
             }
 
             rowsWrapper.append(clone);
@@ -801,7 +828,7 @@ function isValidCheckLink(el: Maybe<Element | EventTarget>): el is HTMLAnchorEle
 } {
     if (!(el instanceof HTMLAnchorElement) || !el.classList.contains("inline-check")) return false;
     const { pf2Dc, against, itemUuid, pf2Check } = el.dataset;
-    return (!!pf2Dc || !!(against && itemUuid)) && SAVE_TYPES.includes(pf2Check);
+    return (!!pf2Dc || !!(against && itemUuid)) && SAVE_TYPES.includes(pf2Check as SaveType);
 }
 
 let BASIC_SAVE_REGEX: RegExp;
@@ -1157,7 +1184,7 @@ function addRollSavesListener(
 
         const targets = R.pipe(
             await Promise.all(canRollSave.map((uuid) => fromUuid(uuid))),
-            R.filter((token) => isValidToken(token))
+            R.filter((token): token is TokenDocumentPF2e => isValidToken(token))
         );
 
         if (targets.length) {
@@ -1189,7 +1216,10 @@ function addSetTargetsListener(
         }
 
         await updateFlag(message, updates);
-        requestAnimationFrame(() => ui.chat.scrollBottom({ popout: true, waitImages: true }));
+        requestAnimationFrame(() =>
+            // @ts-expect-error
+            ui.chat.scrollBottom({ popout: true, waitImages: true })
+        );
     });
 }
 
@@ -1254,7 +1284,7 @@ async function rollSaves(
             const skipDialog = targets.length > 1 || (event.shiftKey ? !skipDefault : skipDefault);
 
             return new Promise<void>((resolve) => {
-                save.check.roll({
+                const rollOptions = {
                     event,
                     dc: { value: dc },
                     item,
@@ -1268,8 +1298,8 @@ async function rollSaves(
 
                         await roll3dDice(roll, target, isPrivate, false);
 
-                        const context = msg.getFlag<CheckContextChatFlag>("pf2e", "context")!;
-                        const modifiers = msg.getFlag<RawModifier[]>("pf2e", "modifiers")!;
+                        const context = msg.getFlag("pf2e", "context") as CheckContextChatFlag;
+                        const modifiers = msg.getFlag("pf2e", "modifiers") as RawModifier[];
 
                         const data: MessageTargetSave = {
                             private: isPrivate,
@@ -1291,7 +1321,9 @@ async function rollSaves(
 
                         resolve();
                     },
-                });
+                } satisfies StatisticRollParameters & { event: Event };
+
+                save.check.roll(rollOptions);
             });
         })
     );
@@ -1370,7 +1402,7 @@ async function rerollSave(
         });
     }
 
-    const oldRoll = Roll.fromJSON<Rolled<CheckRoll>>(flag.roll);
+    const oldRoll = Roll.fromJSON(flag.roll) as Rolled<CheckRoll>;
     const unevaluatedNewRoll = oldRoll.clone() as CheckRoll;
     unevaluatedNewRoll.options.isReroll = true;
 
@@ -1455,7 +1487,7 @@ async function rerollSave(
 }
 
 async function roll3dDice(
-    roll: Rolled<CheckRoll> | RollJSON,
+    roll: Dice3DCheckRoll | RollJSON,
     target: Maybe<TokenDocumentPF2e> | string,
     isPrivate: boolean,
     self: boolean
@@ -1465,7 +1497,7 @@ async function roll3dDice(
     const user = game.user;
     const synchronize = !self && game.pf2e.settings.metagame.breakdowns;
 
-    roll = roll instanceof Roll ? roll : Roll.fromData<Rolled<CheckRoll>>(roll);
+    roll = (roll instanceof Roll ? roll : Roll.fromData(roll)) as Dice3DCheckRoll;
     target = typeof target === "string" ? await fromUuid<TokenDocumentPF2e>(target) : target;
 
     if (!self && !synchronize) {
@@ -1508,17 +1540,19 @@ async function getMessageData(
 
     const user = game.user;
     const isGM = user.isGM;
+    const originActor = message.actor;
+    const isOriginFriendly = !originActor || originActor.isOwner || originActor.hasPlayerOwner;
     const author = save?.author ? await fromUuid<ActorPF2e>(save.author) : undefined;
     const showDC = isGM || game.pf2e.settings.metagame.dcs || author?.hasPlayerOwner;
     const showBreakdowns = isGM || game.pf2e.settings.metagame.breakdowns;
     const showResults = isGM || game.pf2e.settings.metagame.results;
     const showSignificant =
         showBreakdowns ||
-        (game.modules.get("pf2e-modifiers-matter")?.active &&
-            game.settings.get<boolean>(
+        ((game.modules.get("pf2e-modifiers-matter")?.active &&
+            game.settings.get(
                 "pf2e-modifiers-matter",
                 "always-show-highlights-to-everyone"
-            ));
+            )) as boolean);
 
     if (save) {
         const saveLabel = game.i18n.format("PF2E.SavingThrowWithName", {
@@ -1556,7 +1590,7 @@ async function getMessageData(
 
                 const isOwner = targetActor.isOwner;
                 const hasPlayerOwner = targetActor.hasPlayerOwner;
-                const isFriendly = isOwner || hasPlayerOwner;
+                const isTargetFriendly = isOwner || hasPlayerOwner;
                 const hasSave = save && !!targetActor.saves?.[save.statistic];
                 const saveFlag = getTargetSave(message, targetId);
 
@@ -1575,7 +1609,7 @@ async function getMessageData(
 
                     const adjustment = (() => {
                         if (
-                            (!isFriendly && !showBreakdowns) ||
+                            (!isTargetFriendly && !showBreakdowns) ||
                             !saveFlag.unadjustedOutcome ||
                             !saveFlag.dosAdjustments ||
                             saveFlag.success === saveFlag.unadjustedOutcome
@@ -1602,11 +1636,11 @@ async function getMessageData(
                     let result = "";
 
                     if (canSeeResult) {
-                        if (isFriendly || showBreakdowns) {
+                        if (showBreakdowns || isTargetFriendly) {
                             result += `(<i class="fa-solid fa-dice-d20"></i> ${saveFlag.die}) `;
                         }
 
-                        if (isFriendly || showResults) {
+                        if (showResults || isOriginFriendly) {
                             result += localize(
                                 `tooltip.result.${showDC ? "withOffset" : "withoutOffset"}`,
                                 {
@@ -1632,7 +1666,7 @@ async function getMessageData(
                     )?.css;
 
                     const modifiers =
-                        isFriendly || showBreakdowns
+                        showBreakdowns || isTargetFriendly
                             ? saveFlag.modifiers.map(({ label, modifier }) => {
                                   const significant = significantList.findSplice(
                                       ({ name, value }) => name === label && modifier === value
@@ -1646,7 +1680,7 @@ async function getMessageData(
                             : [];
 
                     const significantModifiers =
-                        isFriendly || showSignificant
+                        showSignificant || isTargetFriendly
                             ? significantList.map(({ name, significance, value }) => ({
                                   name: name.replace(/(.+) \d+/, "$1"),
                                   value,
@@ -1708,7 +1742,7 @@ async function getMessageData(
                         isOwner,
                         hasPlayerOwner,
                         isHidden,
-                        showSuccess: isFriendly || showResults,
+                        showSuccess: showResults || isOriginFriendly,
                         messageSave: templateSave,
                         save: hasSave && templateSave,
                         canReroll: targetSave?.canReroll,
