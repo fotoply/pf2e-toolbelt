@@ -1,5 +1,11 @@
 {
     "pf2e-toolbelt": {
+        "SHARED": {
+            "spellcasting": {
+                "staff": "Staff",
+                "charges": "Charges"
+            }
+        },
         "settings": {
             "requiresReload": "(Requires Reload)",
             "actionable": {
@@ -184,6 +190,18 @@
                 "servicesTop": {
                     "name": "Services Above Items",
                     "hint": "Should services be displayed above the items list in the sheet."
+                },
+                "buyMax": {
+                    "name": "Buy Max Ratio",
+                    "hint": "The maximum ratio value for buy filters."
+                },
+                "sellMax": {
+                    "name": "Sell Max Ratio",
+                    "hint": "The maximum ratio value for sell filters."
+                },
+                "servicesMax": {
+                    "name": "Service Max Ratio",
+                    "hint": "The maximum ratio value for services."
                 }
             },
             "underground": {
@@ -332,9 +350,7 @@
             }
         },
         "spellsSummary": {
-            "label": "Spell Summary",
-            "staff": "Staff",
-            "charges": "Charges"
+            "label": "Spell Summary"
         },
         "stances": {
             "sheet": {

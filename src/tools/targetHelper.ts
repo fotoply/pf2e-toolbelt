@@ -142,12 +142,10 @@ const {
                 const addTargets = settings.enabled && value;
 
                 if (addTargets) {
-                    wrappers.enrichHTML.activate();
-                    wrappers.messageGetHTML.activate();
+                    wrappers.activateAll();
                     document.body.addEventListener("dragstart", onDragStart, true);
                 } else {
-                    wrappers.enrichHTML.disable();
-                    wrappers.messageGetHTML.disable();
+                    wrappers.disableAll();
                     document.body.removeEventListener("dragstart", onDragStart, true);
                 }
 
@@ -192,8 +190,7 @@ const {
         hook.activate();
 
         if (settings.addTargets) {
-            wrappers.enrichHTML.activate();
-            wrappers.messageGetHTML.activate();
+            wrappers.activateAll();
             document.body.addEventListener("dragstart", onDragStart, true);
         }
     },
@@ -1516,7 +1513,17 @@ async function roll3dDice(
         roll.ghost = true;
     }
 
-    return game.dice3d.showForRoll(roll, user, synchronize);
+    const speaker = ChatMessage.getSpeaker({ token: target });
+
+    return game.dice3d.showForRoll(
+        roll,
+        user,
+        synchronize,
+        undefined,
+        undefined,
+        undefined,
+        speaker
+    );
 }
 
 function showGhostDiceOnPrivate() {

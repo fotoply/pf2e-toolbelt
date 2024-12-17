@@ -3,6 +3,7 @@ import {
     ActorSheetPF2e,
     ActorType,
     addListenerAll,
+    advanceTime,
     ApplicationClosingOptions,
     ApplicationConfiguration,
     ApplicationRenderContext,
@@ -10,10 +11,10 @@ import {
     CharacterPF2e,
     confirmDialog,
     createHTMLElement,
-    CreaturePF2e,
     DateTime,
     elementDataset,
     getItemIdentificationDCs,
+    getShortDateTime,
     htmlClosest,
     htmlQuery,
     htmlQueryAll,
@@ -25,7 +26,6 @@ import {
     promptDialog,
     R,
     userIsActiveGM,
-    WorldClock,
 } from "module-helpers";
 import { createTool } from "../tool";
 
@@ -250,9 +250,7 @@ class PF2eToolbeltIdentify extends foundry.applications.api.ApplicationV2 {
         const itemGroups: Partial<Record<PhysicalItemType, IdentifyGroupItem[]>> = {};
 
         const useDelay = settings.delay;
-        const worldClock = game.pf2e.worldClock;
-        const worldTime = worldClock.worldTime;
-        const DateTimeCls = worldTime.constructor as typeof DateTime;
+        const { worldTime, date, time } = getShortDateTime();
 
         for (const actor of characters) {
             identifications[actor.id] = getFlag<IdenfifiedFlag>(actor, "identified") ?? {};
@@ -390,7 +388,7 @@ class PF2eToolbeltIdentify extends foundry.applications.api.ApplicationV2 {
                         const fail = fails[actorId];
                         if (!fail) return 0;
 
-                        const failTime = DateTimeCls.fromISO(fail);
+                        const failTime = DateTime.fromISO(fail);
                         const diffTime = worldTime.diff(failTime, useDelay ? "hours" : "days");
                         const removeFail = useDelay ? diffTime.hours >= 24 : diffTime.days >= 1;
 
@@ -475,13 +473,6 @@ class PF2eToolbeltIdentify extends foundry.applications.api.ApplicationV2 {
                 }),
             });
         }
-
-        const time =
-            worldClock.timeConvention === 24
-                ? worldTime.toFormat("HH:mm")
-                : worldTime.toLocaleString(DateTimeCls.TIME_SIMPLE);
-
-        const date = worldTime.toLocaleString(DateTimeCls.DATE_SHORT);
 
         return {
             time,
@@ -696,11 +687,7 @@ class PF2eToolbeltIdentify extends foundry.applications.api.ApplicationV2 {
 
                 case "change-time": {
                     const direction = el.dataset.direction as "+" | "-";
-                    const WorldClockCls = game.pf2e.worldClock.constructor as typeof WorldClock;
-                    const worldTime = game.pf2e.worldClock.worldTime;
-                    // @ts-expect-error
-                    const increment = WorldClockCls.calculateIncrement(worldTime, "600", direction);
-                    if (increment !== 0) game.time.advance(increment);
+                    advanceTime("600", direction);
                     break;
                 }
 

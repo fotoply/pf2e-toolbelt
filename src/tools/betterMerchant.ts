@@ -34,6 +34,7 @@ import {
     error,
     filterTraits,
     getHighestName,
+    getInputValue,
     hasGMOnline,
     hasSufficientCoins,
     htmlClosest,
@@ -42,6 +43,7 @@ import {
     isInstanceOf,
     promptDialog,
     renderActorSheets,
+    renderApplication,
     sendTradeRequest,
     toggleSummaryElement,
     translateTradeData,
@@ -109,6 +111,48 @@ const {
             default: true,
             onChange: () => {
                 renderActorSheets("LootSheetPF2e");
+            },
+        },
+        {
+            key: "buyMax",
+            type: Number,
+            default: RATIO.buy.max,
+            range: {
+                min: 0,
+                max: 9,
+                step: 1,
+            },
+            onChange: () => {
+                renderActorSheets("LootSheetPF2e");
+                renderApplication("FiltersMenu");
+            },
+        },
+        {
+            key: "sellMax",
+            type: Number,
+            default: RATIO.sell.max,
+            range: {
+                min: 0,
+                max: 9,
+                step: 1,
+            },
+            onChange: () => {
+                renderActorSheets("LootSheetPF2e");
+                renderApplication("FiltersMenu");
+            },
+        },
+        {
+            key: "servicesMax",
+            type: Number,
+            default: RATIO.services.max,
+            range: {
+                min: 0,
+                max: 9,
+                step: 1,
+            },
+            onChange: () => {
+                renderActorSheets("LootSheetPF2e");
+                renderApplication("FiltersMenu");
             },
         },
     ],
@@ -665,12 +709,10 @@ async function browserRenderInner(
 }
 
 function fillSelection(tab: CompendiumBrowserEquipmentTab, selection: string[], owned?: string[]) {
-    // @ts-expect-error
-    owned ??= getInMemory<string[]>(tab.browser, "owned") ?? [];
+    owned ??= getInMemory<string[]>(/** protected */ tab["browser"], "owned") ?? [];
     selection.length = 0;
 
-    // @ts-expect-error
-    for (const { uuid } of tab.currentIndex) {
+    for (const { uuid } of /** protected */ tab["currentIndex"]) {
         if (owned.includes(uuid)) continue;
         selection.push(uuid);
         if (selection.length >= PULL_LIMIT) break;
@@ -753,8 +795,7 @@ function updateBrowser(selection: string[], skipAll = false) {
 
     const tab = game.pf2e.compendiumBrowser.tabs.equipment;
     const selected = selection.length;
-    // @ts-expect-error
-    const total = tab.currentIndex.length;
+    const total = /** protected */ tab["currentIndex"].length;
     const isAtLimit = selected >= PULL_LIMIT;
     const reachedLimit = localize("browserPull.limit");
     const numbers = listButtons.querySelectorAll(":scope > div span");
@@ -961,6 +1002,7 @@ async function lootSheetPF2eRenderInner(
                 infiniteAll,
                 servicesRatio: {
                     ...RATIO.services,
+                    max: settings.servicesMax,
                     value: servicesRatio,
                 },
             }),
@@ -1616,8 +1658,8 @@ function getServicesRatio(actor: LootPF2e) {
     return Math.clamp(
         getFlag<number>(actor, "servicesRatio") ?? RATIO.services.default,
         RATIO.services.min,
-        RATIO.services.max
-    );
+        settings.servicesMax
+    ).toNearest(0.01, "floor");
 }
 
 async function enrichService(service: ServiceFlag, ratio?: number): Promise<ServiceData> {
@@ -1698,7 +1740,12 @@ class FiltersMenu extends Application {
             i18n: translate.i18n,
             buyFilters: buyFilters.map(templateFilter(buyFilters)),
             sellFilters: sellFilters.map(templateFilter(sellFilters)),
-            ratios: RATIO,
+            ratios: R.mapValues(RATIO, (ratio, type) => {
+                return {
+                    ...ratio,
+                    max: settings[`${type}Max`],
+                };
+            }),
         };
     }
 
@@ -1739,12 +1786,7 @@ class FiltersMenu extends Application {
             if (!filter) return;
 
             const key = el.name;
-            const value =
-                el.type === "checkbox"
-                    ? el.checked
-                    : el.type === "number"
-                    ? el.valueAsNumber
-                    : el.value.trim();
+            const value = getInputValue(el);
 
             foundry.utils.setProperty(filter, key, value);
             setFilters(this.actor, type, itemFilters);
@@ -1896,7 +1938,7 @@ function setFilters<
 
 function clampPriceRatio(type: ItemFilterType, value: number | undefined) {
     if (typeof value !== "number") return RATIO[type].default;
-    return Math.clamp(value, RATIO[type].min, RATIO[type].max).toNearest(0.1, "floor");
+    return Math.clamp(value, RATIO[type].min, settings[`${type}Max`]).toNearest(0.01, "floor");
 }
 
 type ServiceEventAction = "open-macros" | "edit-image" | "open-macro-sheet" | "delete-macro";
