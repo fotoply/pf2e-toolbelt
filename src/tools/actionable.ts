@@ -23,6 +23,7 @@ import {
     htmlQueryAll,
     renderCharacterSheets,
     renderItemSheets,
+    useAction,
 } from "module-helpers";
 import { createTool } from "../tool";
 import {
@@ -146,37 +147,11 @@ function characterSheetPF2eActivateListeners(
         ".use-action[data-use-action-macro='true']",
         async (event, btn: HTMLButtonElement) => {
             const item = getItemFromActionButton(actor, btn);
-            if (!item?.isOfType("action", "feat")) return;
-
-            if (item.system.frequency) {
-                if (item.system.frequency.value > 0) {
-                    if (item.system.frequency && item.system.frequency.value > 0) {
-                        const newValue = item.system.frequency.value - 1;
-                        await item.update({ "system.frequency.value": newValue });
-                    }
-                }
-            }
-
-            const macro = await getActionMacro(item);
-
-            if (macro) {
-                await macro.execute({ actor, item });
-            } else {
-                await item.toMessage();
+            if (item) {
+                useAction(item);
             }
         }
     );
-}
-
-async function getActionMacro(item: Maybe<ItemPF2e>) {
-    if (!item) return null;
-
-    const isSpell = item.isOfType("spell");
-    const isAction = item.isOfType("feat", "action");
-    if (!isSpell && (!isAction || item.system.selfEffect)) return null;
-
-    const uuid = getFlag<string>(item, "macro");
-    return uuid ? fromUuid<Macro>(uuid) : null;
 }
 
 async function itemSheetPF2eRenderInner(
@@ -350,6 +325,17 @@ async function itemSheetPF2eOnDrop(this: AbilitySheetPF2e | FeatSheetPF2e, event
     } else {
         throw ErrorPF2e("Invalid item drop");
     }
+}
+
+async function getActionMacro(item: Maybe<ItemPF2e>) {
+    if (!item) return null;
+
+    const isSpell = item.isOfType("spell");
+    const isAction = item.isOfType("feat", "action");
+    if (!isSpell && (!isAction || item.system.selfEffect || item.crafting)) return null;
+
+    const uuid = getFlag<string>(item, "macro");
+    return uuid ? fromUuid<Macro>(uuid) : null;
 }
 
 type SpellMacroValue = false | { skipNotification?: boolean; customNotification?: string };

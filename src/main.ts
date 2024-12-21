@@ -1,12 +1,15 @@
-import { getSetting, MODULE, userIsGM } from "module-helpers";
+import { getSetting, MODULE, R, userIsGM } from "module-helpers";
+import { ModuleMigration } from "module-helpers/dist/migration";
 import { onRenderSettingsConfig, registerToolsSettings } from "./settings";
 import type { ToolConfig } from "./tool";
 import { actionableTool } from "./tools/actionable";
 import { arpTool } from "./tools/arp";
 import { betterMerchantTool } from "./tools/betterMerchant";
 import { debugTool } from "./tools/debug";
+import { droppethTool } from "./tools/droppeth";
 import { effectsPanelTool } from "./tools/effectsPanel";
 import { givethTool } from "./tools/giveth";
+import { GlobalTool } from "./tools/global";
 import { heroActionsTool } from "./tools/heroActions";
 import { hideDamageTool } from "./tools/hideDamage";
 import { identifyTool } from "./tools/identify";
@@ -25,11 +28,13 @@ import { useButtonTool } from "./tools/useButton";
 MODULE.register("pf2e-toolbelt");
 
 const TOOLS: ToolConfig[] = [
+    GlobalTool,
     actionableTool,
     arpTool,
     betterMerchantTool,
     debugTool,
     untargetTool,
+    droppethTool,
     effectsPanelTool,
     givethTool,
     heroActionsTool,
@@ -46,6 +51,46 @@ const TOOLS: ToolConfig[] = [
     undergroundTool,
     useButtonTool,
 ];
+
+{
+    const migrations = R.pipe(
+        TOOLS,
+        R.flatMap((tool) => tool.migrations ?? []),
+        R.groupBy(R.prop("version"))
+    );
+
+    for (const [version, entries] of R.entries(migrations)) {
+        if (!entries.length) continue;
+
+        const migration: Omit<ModuleMigration, "module"> = {
+            version: Number(version),
+        };
+
+        for (const functionName of ["migrateActor", "migrateUser"] as const) {
+            const migrateFunctions = R.pipe(
+                entries,
+                R.map((entry) => entry[functionName]),
+                R.filter(R.isTruthy)
+            );
+
+            if (!migrateFunctions.length) continue;
+
+            migration[functionName] = async (source) => {
+                let migrated = false;
+
+                for (const migrateFunction of migrateFunctions) {
+                    if (await migrateFunction(source as any)) {
+                        migrated = true;
+                    }
+                }
+
+                return migrated;
+            };
+        }
+
+        MODULE.registerMigration(migration);
+    }
+}
 
 Hooks.once("init", () => {
     const isGM = userIsGM();

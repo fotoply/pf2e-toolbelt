@@ -2,14 +2,16 @@ import {
     ActorPF2e,
     ApplicationClosingOptions,
     ApplicationConfiguration,
+    ApplicationRenderContext,
     ApplicationRenderOptions,
     ChatMessagePF2e,
     Coins,
     CoinsPF2e,
     CompendiumBrowser,
-    CompendiumBrowserEquipmentTab,
+    CompendiumBrowserIndexData,
     EquipmentFilters,
     ErrorPF2e,
+    ExtractSocketOptions,
     ItemPF2e,
     ItemTransferDialog,
     LootPF2e,
@@ -19,23 +21,20 @@ import {
     R,
     TokenDocumentPF2e,
     TokenPF2e,
-    TradeData,
-    TradePacket,
-    TranslatedTradeData,
+    addItemsToActor,
     addListener,
     addListenerAll,
     arrayIncludes,
     calculateItemPrice,
     confirmDialog,
+    createCallOrEmit,
     createHTMLElement,
-    createTradeMessage,
+    createTransferMessage,
     elementDataset,
-    enactTradeRequest,
-    error,
     filterTraits,
     getHighestName,
     getInputValue,
-    hasGMOnline,
+    getTransferData,
     hasSufficientCoins,
     htmlClosest,
     htmlQuery,
@@ -44,12 +43,11 @@ import {
     promptDialog,
     renderActorSheets,
     renderApplication,
-    sendTradeRequest,
     toggleSummaryElement,
-    translateTradeData,
-    userIsActiveGM,
+    updateTransferSource,
     wrapperError,
 } from "module-helpers";
+import { ModuleMigration } from "module-helpers/dist/migration";
 import { createTool } from "../tool";
 import { updateItemTransferDialog } from "./shared/item-transfer-dialog";
 
@@ -79,22 +77,109 @@ const RATIO = {
 
 const ITEM_PREPARE_DERIVED_DATA = "CONFIG.Item.documentClass.prototype.prepareDerivedData";
 
+const MIGRATION_225: ModuleMigration = {
+    version: 2.25,
+    migrateActor: (actorSource) => {
+        if (actorSource.type !== "loot") return false;
+
+        const flag = getFlagProperty(actorSource);
+        if (!R.isPlainObject(flag) || !R.isPlainObject(flag.filters)) return false;
+
+        const setCheckbox = (
+            checkbox: Partial<{
+                options: Record<string, { selected: boolean }>;
+                selected: string[];
+            }>
+        ) => {
+            if (!R.isArray(checkbox.selected)) return;
+
+            checkbox.options ??= {};
+
+            for (const selection of checkbox.selected) {
+                checkbox.options[selection] ??= { selected: true };
+            }
+
+            return checkbox;
+        };
+
+        for (const type of ["buy", "sell"]) {
+            const typeFilters = flag.filters[type];
+            if (!R.isArray(typeFilters)) {
+                flag.filters[`-=${type}`] = true;
+                continue;
+            }
+
+            flag.filters[type] = R.pipe(
+                foundry.utils.deepClone(typeFilters),
+                R.filter(
+                    (typeFilters): typeFilters is { filter: { [k: string]: unknown } } =>
+                        R.isPlainObject(typeFilters) && R.isPlainObject(typeFilters.filter)
+                ),
+                R.map((typeFilter) => {
+                    const filter = typeFilter.filter;
+
+                    if ("order" in filter) {
+                        delete filter.order;
+                    }
+
+                    if (R.isPlainObject(filter.checkboxes)) {
+                        if (R.isPlainObject(filter.checkboxes.source)) {
+                            filter.source = setCheckbox(filter.checkboxes.source);
+                            delete filter.checkboxes.source;
+                        }
+
+                        for (const checkbox of Object.values(filter.checkboxes)) {
+                            setCheckbox(checkbox as any);
+                        }
+                    }
+
+                    if (R.isPlainObject(filter.multiselects)) {
+                        if ("traits" in filter.multiselects) {
+                            filter.traits = filter.multiselects.traits;
+                        }
+                        delete filter.multiselects;
+                    }
+
+                    if (R.isPlainObject(filter.sliders)) {
+                        if (
+                            R.isPlainObject(filter.sliders.level) &&
+                            R.isPlainObject(filter.sliders.level.values)
+                        ) {
+                            const level = filter.sliders.level.values;
+
+                            filter.level = {
+                                changed: true,
+                                from: level.min ?? 0,
+                                to: level.max ?? 20,
+                            };
+                        }
+                        delete filter.sliders;
+                    }
+
+                    return typeFilter;
+                })
+            );
+        }
+
+        return true;
+    },
+};
+
 const {
     config,
     settings,
     wrappers,
     localize,
     socket,
-    hooks,
+    hook,
     getFlag,
     setFlag,
     setFlagProperty,
     render,
+    getFlagProperty,
     getInMemory,
-    getInMemoryAndSetIfNot,
     setInMemory,
     deleteInMemory,
-    templatePath,
     waitDialog,
 } = createTool({
     name: "betterMerchant",
@@ -161,10 +246,6 @@ const {
             event: "renderItemTransferDialog",
             listener: onRenderItemTransferDialog,
         },
-        {
-            event: "createChatMessage",
-            listener: onCreateChatMessage,
-        },
     ],
     wrappers: [
         {
@@ -189,24 +270,14 @@ const {
             type: "OVERRIDE",
         },
         {
-            key: "browserRenderInner",
-            path: "game.pf2e.compendiumBrowser.constructor.prototype._renderInner",
-            callback: browserRenderInner,
+            key: "browserOnFirstRender",
+            path: "game.pf2e.compendiumBrowser.constructor.prototype._onFirstRender",
+            callback: browserOnFirstRender,
         },
         {
-            key: "browserEquipmentTabRenderResults",
-            path: "game.pf2e.compendiumBrowser.tabs.equipment.constructor.prototype.renderResults",
-            callback: browserEquipmentTabRenderResults,
-        },
-        {
-            key: "browserListeners",
-            path: "game.pf2e.compendiumBrowser.constructor.prototype.activateListeners",
-            callback: browserActivateListeners,
-        },
-        {
-            key: "browserClose",
-            path: "game.pf2e.compendiumBrowser.constructor.prototype.close",
-            callback: browserClose,
+            key: "browserOnClose",
+            path: "game.pf2e.compendiumBrowser.constructor.prototype._onClose",
+            callback: browserOnClose,
         },
         {
             key: "itemDerivedData",
@@ -218,9 +289,16 @@ const {
         testItem,
         compareItemWithFilter,
     },
-    onSocket: (packet: TradePacket<PacketData>, userId: string) => {
-        const translated = translateTradeData(packet);
-        buyItem(translated, userId);
+    migrations: [MIGRATION_225],
+    onSocket: (packet: BetterMerchantPacket, userId: string) => {
+        switch (packet.type) {
+            case "buy":
+                tradeRequest(packet);
+                break;
+            case "service":
+                serviceRequest(packet);
+                break;
+        }
     },
     init: () => {
         if (!settings.enabled) return;
@@ -232,7 +310,7 @@ const {
     ready: (isGM) => {
         if (!settings.enabled) return;
 
-        hooks.renderItemTransferDialog.activate();
+        hook.activate();
 
         wrappers.lootSheetRenderInner.activate();
         wrappers.lootSheetListeners.activate();
@@ -240,88 +318,14 @@ const {
         if (isGM) {
             socket.activate();
 
-            hooks.createChatMessage.activate();
-
-            wrappers.browserRenderInner.activate();
-            wrappers.browserEquipmentTabRenderResults.activate();
-            wrappers.browserListeners.activate();
-            wrappers.browserClose.activate();
+            wrappers.browserOnFirstRender.activate();
+            wrappers.browserOnClose.activate();
         }
     },
 } as const);
 
-async function onCreateChatMessage(message: ChatMessagePF2e) {
-    if (!userIsActiveGM()) return;
-
-    const serviceFlag = getFlag<ServiceMsgFlag>(message, "service");
-    if (serviceFlag) {
-        const errorUpdate = () => {
-            const msgContent = createHTMLElement("div", { innerHTML: message.content });
-            const cardContent = htmlQuery(msgContent, ".card-content") ?? msgContent;
-            const errorMsg = localize("service.error");
-
-            cardContent.innerHTML = `<p class="pf2e-toolbelt-service-error">${errorMsg}</p>`;
-            message.update({ content: msgContent.innerHTML });
-        };
-
-        const buyer = await fromUuid(serviceFlag.buyerUUID);
-        const seller = await fromUuid(serviceFlag.sellerUUID);
-        if (!isInstanceOf(seller, "LootPF2e") || !isValidServiceBuyer(buyer)) {
-            return errorUpdate();
-        }
-
-        const services = getServices(seller);
-        const service = services.find((service) => service.id === serviceFlag.serviceId);
-        if (!service) {
-            return errorUpdate();
-        }
-
-        const serviceRatio = getServicesRatio(seller);
-        const originalPrice = getServicePrice(service);
-        const usedPrice = serviceFlag.forceFree
-            ? null
-            : serviceRatio === 1
-            ? originalPrice
-            : originalPrice.scale(serviceRatio);
-
-        if (!serviceFlag.forceFree) {
-            if (!serviceCanBePurchased(service)) {
-                return errorUpdate();
-            }
-
-            const price = usedPrice!;
-            const quantity = service.quantity ?? -1;
-
-            if (price.copperValue > 0) {
-                if (await buyer.inventory.removeCoins(price)) {
-                    await seller.inventory.addCoins(price);
-                } else {
-                    return await errorUpdate();
-                }
-            }
-
-            if (quantity > 0) {
-                service.quantity = quantity - 1;
-                await setServices(seller, services);
-            }
-        }
-
-        const macro = await getServiceMacro(service);
-        macro?.execute({
-            actor: buyer,
-            service: {
-                seller,
-                usedPrice,
-                serviceRatio,
-                originalPrice,
-                name: service.name ?? service.id,
-                level: service.level ?? 0,
-                quantity: service.quantity ?? -1,
-                forceFree: serviceFlag.forceFree,
-            },
-        } satisfies ServiceMacroData);
-    }
-}
+const tradeRequest = createCallOrEmit("buy", buyItem, socket);
+const serviceRequest = createCallOrEmit("service", sellService, socket);
 
 function onRenderItemTransferDialog(app: ItemTransferDialog, $html: JQuery) {
     const thisActor = app.item.actor;
@@ -337,7 +341,13 @@ function onRenderItemTransferDialog(app: ItemTransferDialog, $html: JQuery) {
     )
         return;
 
-    updateItemTransferDialog(app, $html, "PF2E.loot.SellSubtitle", localize.path("buy.question"));
+    updateItemTransferDialog(
+        app,
+        $html,
+        "PF2E.loot.SellSubtitle",
+        localize.path("buy.question"),
+        true
+    );
 }
 
 /**
@@ -426,38 +436,29 @@ async function actorTransferItemToActor(
             item: item.name,
             quantity: realQuantity === 1 ? "" : `x${realQuantity}`,
         });
-        return null;
+    } else {
+        tradeRequest({
+            item,
+            targetActor,
+            quantity,
+            filterId: itemFilter.filter.id,
+            priceData: itemFilter.price.toObject(),
+        });
     }
 
-    if (isGM) {
-        return buyItem(
-            {
-                sourceActor: this,
-                targetActor,
-                sourceItem: item,
-                quantity,
-                filterId: itemFilter.filter.id,
-                priceData: itemFilter.price.toObject(),
-            },
-            game.user.id
-        );
-    } else {
-        sendTradeRequest(
-            this,
-            targetActor,
-            item,
-            { quantity, filterId: itemFilter.filter.id, priceData: itemFilter.price.toObject() },
-            socket
-        );
-        return null;
-    }
+    // we return null to signal we take over the process of the item transfer
+    return null;
 }
 
-async function buyItem(translated: TranslatedTradeData<PacketData>, senderId: string) {
-    const enacted = await enactTradeRequest(translated);
-    if (!enacted) return null;
+async function buyItem(
+    { filterId, item, priceData, targetActor, quantity }: BuyItemOptions,
+    userId: string
+) {
+    const sendError = () => {
+        localize.error("buy.error", { user: game.users.get(userId)?.name ?? "unknown" });
+    };
 
-    const { filterId, priceData, sourceActor, targetActor, newItem } = enacted;
+    const sourceActor = item.actor;
     const filters = targetActor ? getFilters(targetActor as LootPF2e, "buy", true) : [];
     const filter = filters.find((x) => x.id === filterId);
 
@@ -466,9 +467,22 @@ async function buyItem(translated: TranslatedTradeData<PacketData>, senderId: st
         !targetActor.isOfType("loot") ||
         !sourceActor.isOfType("npc", "character", "party")
     ) {
-        localize.error("buy.error", { user: game.users.get(senderId)?.name ?? "unknown" });
-        return;
+        return sendError();
     }
+
+    const transferData = await getTransferData({ item, quantity });
+
+    if (!transferData) {
+        return sendError();
+    }
+
+    const items = await addItemsToActor({ ...transferData, targetActor });
+
+    if (!items) {
+        return sendError();
+    }
+
+    await updateTransferSource({ item, quantity: transferData.quantity });
 
     const updates = {};
     const defaultFilter = filters.pop()!;
@@ -489,16 +503,15 @@ async function buyItem(translated: TranslatedTradeData<PacketData>, senderId: st
     await targetActor.update(updates);
     await sourceActor.inventory.addCoins(price);
 
-    createTradeMessage(
-        enacted,
-        {
-            message: "PF2E.loot.SellMessage",
-            subtitle: "PF2E.loot.SellSubtitle",
-        },
-        senderId
-    );
-
-    return newItem;
+    createTransferMessage({
+        item: items.item,
+        sourceActor: item.actor,
+        targetActor,
+        quantity: transferData.quantity,
+        userId,
+        subtitle: game.i18n.localize("PF2E.loot.SellSubtitle"),
+        message: "PF2E.loot.SellMessage",
+    });
 }
 
 function itemPrepareDerivedData(this: ItemPF2e, wrapped: libWrapper.RegisterCallback) {
@@ -551,7 +564,8 @@ function testItem(actor: LootPF2e, item: PhysicalItemPF2e, type: ItemFilterType,
 
     if (!defaultFilter.enabled) return;
 
-    const price = calculateItemPrice(item, quantity, defaultFilter.ratio);
+    const ratio = type === "buy" && item.isOfType("treasure") ? 1 : defaultFilter.ratio;
+    const price = calculateItemPrice(item, quantity, ratio);
     if (type === "buy" && defaultFilter.purse < price.goldValue) return;
 
     return { price, filter: defaultFilter };
@@ -576,29 +590,24 @@ function compareItemWithFilter(item: PhysicalItemPF2e, filter: Partial<Equipment
         if (!nameChecks) return false;
     }
 
-    const { checkboxes, multiselects, ranges, sliders } = filter;
+    const { checkboxes, ranges, source, traits, level } = filter;
 
     // Level
     const itemLevel = item.level;
-    if (
-        sliders?.level &&
-        (itemLevel < sliders.level.values.min || itemLevel > sliders.level.values.max)
-    ) {
+    if (level && (itemLevel < level.from || itemLevel > level.to)) {
         return false;
     }
 
     // Price
+    const filterPrice = ranges?.price?.values;
     const priceInCopper = item.price.value.copperValue;
-    if (
-        ranges?.price &&
-        (priceInCopper < ranges.price.values.min || priceInCopper > ranges.price.values.max)
-    ) {
+    if (filterPrice && (priceInCopper < filterPrice.min || priceInCopper > filterPrice.max)) {
         return false;
     }
 
     // Item type
-    const itemTypes = checkboxes?.itemTypes?.selected;
-    if (itemTypes && itemTypes.length > 0 && !itemTypes.includes(item.type)) {
+    const filterItemTypes = checkboxes?.itemTypes?.selected;
+    if (filterItemTypes?.length && !filterItemTypes.includes(item.type)) {
         return false;
     }
 
@@ -606,376 +615,278 @@ function compareItemWithFilter(item: PhysicalItemPF2e, filter: Partial<Equipment
     const itemGroup = "group" in item ? (item.group as string) : "";
 
     // Armor
-    const armorTypes = checkboxes?.armorTypes?.selected;
-    if (
-        armorTypes &&
-        armorTypes.length > 0 &&
-        !arrayIncludes(armorTypes, [itemCategory, itemGroup])
-    ) {
+    const filterArmorTypes = checkboxes?.armorTypes?.selected;
+    if (filterArmorTypes?.length && !arrayIncludes(filterArmorTypes, [itemCategory, itemGroup])) {
         return false;
     }
 
     // Weapon categories
-    const weaponTypes = checkboxes?.weaponTypes?.selected;
-    if (
-        weaponTypes &&
-        weaponTypes.length > 0 &&
-        !arrayIncludes(weaponTypes, [itemCategory, itemGroup])
-    ) {
+    const filterWeaponTypes = checkboxes?.weaponTypes?.selected;
+    if (filterWeaponTypes?.length && !arrayIncludes(filterWeaponTypes, [itemCategory, itemGroup])) {
         return false;
     }
 
     // Traits
-    const traits = multiselects?.traits;
     if (traits && !filterTraits([...item.traits], traits.selected, traits.conjunction)) {
         return false;
     }
 
     // Source
+    const filterSource = source?.selected;
     const itemSource = game.pf2e.system.sluggify(item.system.publication?.title ?? "").trim();
-    const sources = checkboxes?.source?.selected;
-    if (sources && sources.length > 0 && !sources.includes(itemSource)) {
+    if (filterSource?.length && !filterSource.includes(itemSource)) {
         return false;
     }
 
     // Rarity
-    const rarities = checkboxes?.rarity?.selected;
-    if (rarities && rarities.length > 0 && !rarities.includes(item.rarity)) {
+    const filterRarity = checkboxes?.rarity?.selected;
+    if (filterRarity?.length && !filterRarity.includes(item.rarity)) {
         return false;
     }
 
     return true;
 }
 
-async function browserClose(
+async function browserOnClose(
     this: CompendiumBrowser,
     wrapped: libWrapper.RegisterCallback,
-    options: any
+    ...args: any[]
 ) {
     deleteInMemory(this);
-    wrapped(options);
+    wrapped(...args);
 }
 
-async function browserRenderInner(
+function browserOnFirstRender(
     this: CompendiumBrowser,
     wrapped: libWrapper.RegisterCallback,
-    sheetData: CompendiumBrowserSheetData
+    ...args: any[]
 ) {
-    const $html = await wrapped(sheetData);
+    wrapped(...args);
 
     const data = getInMemory<BrowserData>(this);
-    if (!data?.actor.isMerchant) return $html;
+    if (!data?.actor.isMerchant) return;
 
-    const html = $html[0];
-    const listButtons = htmlQuery(html, "section.content .tab[data-tab='equipment'] .list-buttons");
-    if (!listButtons) return $html;
+    const html = this.element;
+    const controls = htmlQuery(html, ".window-header [data-action='toggleControls']");
 
     html.classList.add("toolbelt-merchant");
 
-    for (const button of listButtons.querySelectorAll("button")) {
-        button.remove();
-    }
+    (async () => {
+        const label =
+            data.type === "pull"
+                ? localize("browserPull.add")
+                : localize("browserFilter", data.edit ? "edit" : "create", {
+                      type: localize("filter", data.filterType),
+                  });
 
-    if (data.type === "pull") {
-        const pullElements = createHTMLElement("div", {
-            innerHTML: await render("browserPull", {}),
+        const btn = createHTMLElement("button", {
+            classes: ["header-button"],
+            innerHTML: label,
         });
 
-        listButtons.append(...pullElements.children);
+        btn.addEventListener("click", async (event) => {
+            this.close();
 
-        const oweditems = R.pipe(
-            data.actor.inventory.contents,
+            const tab = this.tabs.equipment;
+
+            if (data.type === "pull") {
+                new BrowserPullMenu(data.actor, tab.results).render(true);
+            } else {
+                const filters = getFilters(data.actor, data.filterType, false) as ItemFilterBase[];
+                const filter: Partial<EquipmentFilters> = foundry.utils.diffObject(
+                    await tab.getFilterData(),
+                    tab.filterData
+                );
+
+                delete filter.order;
+
+                if (data.edit) {
+                    const itemFilter = filters.find((x) => x.id === data.edit);
+
+                    if (itemFilter) {
+                        itemFilter.filter = filter;
+                        setFilters(data.actor, data.filterType, filters);
+                        return;
+                    }
+                }
+
+                const id = foundry.utils.randomID();
+                const itemFilter: ItemFilter = {
+                    id,
+                    name: id,
+                    enabled: true,
+                    filter,
+                    useDefault: true,
+                };
+
+                filters.unshift(itemFilter);
+                setFilters(data.actor, data.filterType, filters);
+            }
+        });
+
+        controls?.replaceWith(btn);
+    })();
+}
+
+class BrowserPullMenu extends foundry.applications.api.ApplicationV2 {
+    #actor: LootPF2e;
+    #owned: string[];
+    #selection: string[] = [];
+    #results: CompendiumBrowserIndexData[];
+
+    static DEFAULT_OPTIONS: DeepPartial<ApplicationConfiguration> = {
+        position: {
+            width: 600,
+        },
+        classes: ["pf2e-hud-browserPull"],
+    };
+
+    constructor(
+        actor: LootPF2e,
+        results: CompendiumBrowserIndexData[],
+        options: DeepPartial<ApplicationConfiguration> = {}
+    ) {
+        options.window ??= {};
+        options.window.title = localize("browserPull.title", { name: actor.name });
+
+        super(options);
+
+        this.#actor = actor;
+        this.#results = results;
+
+        this.#owned = R.pipe(
+            actor.inventory.contents,
             R.map((item) => item.sourceId),
             R.filter(R.isTruthy)
         );
 
-        deleteInMemory(this, "selection");
-        setInMemory(this, "owned", oweditems);
-    } else {
-        const typeLabel = localize("filter", data.filterType);
-        const label = localize("browserFilter", data.edit ? "edit" : "create", { type: typeLabel });
+        this.#selectToLimit();
+    }
 
-        const button = createHTMLElement("button", {
-            innerHTML: label,
-            dataset: {
-                action: "validate-filter",
-            },
+    get selected() {
+        return this.#selection.length;
+    }
+
+    async _prepareContext(options: ApplicationRenderOptions): Promise<BrowserPullMenuContext> {
+        return {
+            owned: this.#owned,
+            results: this.#results,
+        };
+    }
+
+    _renderHTML(
+        context: ApplicationRenderContext,
+        options: ApplicationRenderOptions
+    ): Promise<string> {
+        return render("browserPull", context);
+    }
+
+    protected _onFirstRender(context: object, options: ApplicationRenderOptions): void {
+        this.#updateCheckboxes();
+    }
+
+    _replaceHTML(result: string, content: HTMLElement, options: ApplicationRenderOptions): void {
+        content.innerHTML = result;
+        this.#activateListeners(content);
+    }
+
+    #updateCheckboxes() {
+        const itemsUl = htmlQuery(this.element, "ul");
+        const countEl = htmlQuery(this.element, ".header .count");
+        if (!itemsUl || !countEl) return;
+
+        const selected = this.selected;
+        const isAtLimit = selected >= PULL_LIMIT;
+
+        // count
+
+        countEl.textContent = String(selected);
+
+        // select inputs
+
+        let element: Element;
+        const iterator = document.createNodeIterator(itemsUl, NodeFilter.SHOW_ELEMENT);
+
+        while ((element = iterator.nextNode() as Element)) {
+            if (!(element instanceof HTMLInputElement)) continue;
+
+            const checked = this.#selection.includes(element.dataset.uuid!);
+
+            element.checked = checked;
+            element.disabled = !checked && isAtLimit;
+        }
+    }
+
+    #selectToLimit() {
+        this.#selection.length = 0;
+
+        for (const { uuid } of this.#results) {
+            if (this.#owned.includes(uuid)) continue;
+            this.#selection.push(uuid);
+            if (this.#selection.length >= PULL_LIMIT) break;
+        }
+    }
+
+    #activateListeners(html: HTMLElement) {
+        addListener(html, "[data-action='toggle-all']", () => {
+            if (this.selected === 0) {
+                this.#selectToLimit();
+            } else {
+                this.#selection.length = 0;
+            }
+
+            this.#updateCheckboxes();
         });
 
-        listButtons.append(button);
+        addListener(html, "[data-action='add-to-merchant']", () => {
+            this.#addToMerchant();
+            this.close();
+        });
+
+        addListenerAll(html, "[name='selected-item']", "change", (event, el: HTMLInputElement) => {
+            const uuid = el.dataset.uuid!;
+
+            if (el.checked) {
+                this.#selection.push(uuid);
+            } else {
+                this.#selection.findSplice((x) => x === uuid);
+            }
+
+            this.#updateCheckboxes();
+        });
     }
 
-    return $html;
-}
+    async #addToMerchant() {
+        const selection = this.#selection.slice();
+        if (selection.length === 0) return;
 
-function fillSelection(tab: CompendiumBrowserEquipmentTab, selection: string[], owned?: string[]) {
-    owned ??= getInMemory<string[]>(/** protected */ tab["browser"], "owned") ?? [];
-    selection.length = 0;
+        const actor = this.#actor;
+        const message = localize("browserPull.confirm", { nb: selection.length });
+        const confirm = await confirmDialog({
+            title: `${localize("sheet.browser")} - ${actor.name}`,
+            content: `<div style="margin-bottom: 0.5em;">${message}</div>`,
+        });
+        if (!confirm) return;
 
-    for (const { uuid } of /** protected */ tab["currentIndex"]) {
-        if (owned.includes(uuid)) continue;
-        selection.push(uuid);
-        if (selection.length >= PULL_LIMIT) break;
-    }
+        const groups: string[][] = [];
 
-    return selection;
-}
-
-async function browserEquipmentTabRenderResults(
-    this: CompendiumBrowserEquipmentTab,
-    wrapped: libWrapper.RegisterCallback,
-    start: number
-): Promise<HTMLLIElement[]> {
-    const browser = this.browser;
-    const itemElements = (await wrapped(start)) as HTMLLIElement[];
-    const data = getInMemory<BrowserData>(browser);
-    if (!data || !data.actor.isMerchant) return itemElements;
-
-    for (const itemElement of itemElements) {
-        for (const a of itemElement.querySelectorAll(":scope > a")) {
-            a.remove();
-        }
-    }
-
-    if (data.type !== "pull") return itemElements;
-
-    const selection = getInMemoryAndSetIfNot(browser, "selection", () => {
-        const selection = fillSelection(this, [], data.owned);
-        updateBrowser(selection);
-        return selection;
-    });
-
-    const isAtLimit =
-        selection.length >= PULL_LIMIT
-            ? `data-tooltip="${localize("browserPull.limit")}" disabled`
-            : "";
-
-    const ownedStr = localize("browserPull.owned");
-    const isOwned = `<i class="fa-solid fa-box" data-tooltip="${ownedStr}"></i>`;
-
-    for (const itemElement of itemElements) {
-        const { entryUuid } = elementDataset(itemElement);
-
-        if (data.owned.includes(entryUuid)) {
-            itemElement.insertAdjacentHTML("beforeend", isOwned);
-            continue;
+        while (selection.length) {
+            const uuids = selection.splice(0, 10);
+            groups.push(uuids);
         }
 
-        const checked = selection.includes(entryUuid) ? "checked" : "";
-        itemElement.insertAdjacentHTML(
-            "beforeend",
-            `<input type='checkbox' data-uuid="${entryUuid}" 
-			${checked} ${!checked ? isAtLimit : ""}>`
+        await Promise.all(
+            groups.map(async (uuids) => {
+                const sources = R.pipe(
+                    await Promise.all(uuids.map((uuid) => fromUuid<ItemPF2e>(uuid))),
+                    R.filter((item): item is PhysicalItemPF2e => !!item?.isOfType("physical")),
+                    R.map((item) => item.toObject())
+                );
+                return actor.createEmbeddedDocuments("Item", sources);
+            })
         );
 
-        const checkbox = itemElement.querySelector("input");
-        checkbox?.addEventListener("change", () => {
-            if (checkbox.checked) {
-                selection.push(entryUuid);
-            } else {
-                const index = selection.indexOf(entryUuid);
-                selection.splice(index, 1);
-            }
-            updateBrowser(selection);
-        });
-    }
-
-    return itemElements;
-}
-
-function updateBrowser(selection: string[], skipAll = false) {
-    const browserApp = document.getElementById("compendium-browser");
-    const browserTab = browserApp?.querySelector(
-        ".content-box.toolbelt-merchant .content .tab[data-tab=equipment]"
-    );
-    if (!browserTab) return;
-
-    const listButtons = htmlQuery(browserTab, ".list-buttons");
-    if (!listButtons) return;
-
-    const tab = game.pf2e.compendiumBrowser.tabs.equipment;
-    const selected = selection.length;
-    const total = /** protected */ tab["currentIndex"].length;
-    const isAtLimit = selected >= PULL_LIMIT;
-    const reachedLimit = localize("browserPull.limit");
-    const numbers = listButtons.querySelectorAll(":scope > div span");
-    const checkboxes = browserTab.querySelectorAll<HTMLInputElement>(".result-list .item input");
-
-    if (numbers.length) {
-        numbers[0].textContent = String(selected);
-        numbers[1].textContent = String(total);
-    }
-
-    if (!skipAll) {
-        const checkbox = listButtons.querySelector<HTMLInputElement>(":scope > label input");
-        if (checkbox) {
-            if (selected === 0) {
-                checkbox.indeterminate = false;
-                checkbox.checked = false;
-            } else if (isAtLimit || selected >= total) {
-                checkbox.indeterminate = false;
-                checkbox.checked = true;
-            } else {
-                checkbox.indeterminate = true;
-                checkbox.checked = true;
-            }
-        }
-    }
-
-    htmlQuery<HTMLButtonElement>(listButtons, "button")!.disabled = selected === 0;
-
-    for (const checkbox of checkboxes) {
-        const checked = checkbox.checked;
-        const disabled = !checked && isAtLimit;
-
-        checkbox.disabled = disabled;
-        checkbox.dataset.tooltip = disabled ? reachedLimit : "";
-    }
-}
-
-function browserActivateListeners(
-    this: CompendiumBrowser,
-    wrapped: libWrapper.RegisterCallback,
-    $html: JQuery
-) {
-    wrapped($html);
-
-    const data = getInMemory<BrowserData>(this);
-    if (!data?.actor?.isMerchant) return;
-
-    const html = $html[0];
-    const tabEl = htmlQuery(html, "section.content .tab[data-tab='equipment']");
-    const listButtons = htmlQuery(tabEl, ".list-buttons");
-    if (!listButtons) return;
-
-    const actor = data.actor;
-    const browser = this;
-    const tab = browser.tabs.equipment;
-
-    if (data.type === "pull") {
-        addListener(listButtons, "[data-action='add-to-merchant']", async () => {
-            const selection = getInMemory<string[]>(browser, "selection") ?? [];
-            const message = localize("browserPull.confirm", { nb: selection.length });
-            const confirm = await Dialog.confirm({
-                title: `${localize("sheet.browser")} - ${actor.name}`,
-                content: `<div style="margin-bottom: 0.5em;">${message}</div>`,
-            });
-            if (!confirm) return;
-
-            localize.info("browserPull.wait");
-            browser.close();
-
-            const items = R.pipe(
-                await Promise.all(selection.map((uuid) => fromUuid<PhysicalItemPF2e>(uuid))),
-                R.filter(R.isTruthy),
-                R.map((item) => item.toObject())
-            );
-
-            if (items.length) {
-                await actor.createEmbeddedDocuments("Item", items);
-            }
-
-            localize.info("browserPull.finished");
-        });
-
-        addListener(
-            listButtons,
-            "[data-action='toggle-select-all']",
-            (event, el: HTMLInputElement) => {
-                const checkAll = el.checked;
-                const selection = getInMemory<string[]>(browser, "selection") ?? [];
-
-                if (checkAll) {
-                    fillSelection(tab, selection);
-                } else {
-                    selection.length = 0;
-                }
-
-                const checkboxes = tabEl!.querySelectorAll<HTMLInputElement>(".item input");
-                for (const checkbox of checkboxes) {
-                    const { uuid } = elementDataset(checkbox);
-                    checkbox.checked = selection.includes(uuid);
-                }
-
-                updateBrowser(selection, false);
-            }
-        );
-    } else {
-        addListener(listButtons, "[data-action='validate-filter']", async () => {
-            const filterData = tab.filterData;
-            const defaultData = await tab.getFilterData();
-            const extractedData: Partial<EquipmentFilters> = {};
-            const search = filterData.search.text.trim();
-
-            if (search) {
-                foundry.utils.setProperty(extractedData, "search.text", search);
-            }
-
-            for (const type of ["checkboxes", "multiselects"] as const) {
-                for (const [category, data] of Object.entries(filterData[type])) {
-                    if (!data.selected.length) continue;
-
-                    const path = `${type}.${category}`;
-
-                    foundry.utils.setProperty(extractedData, `${path}.selected`, data.selected);
-
-                    if ("conjunction" in data) {
-                        foundry.utils.setProperty(
-                            extractedData,
-                            `${path}.conjunction`,
-                            data.conjunction
-                        );
-                    }
-                }
-            }
-
-            for (const type of ["ranges", "sliders"] as const) {
-                const defaultType = defaultData[type];
-
-                for (const [category, data] of Object.entries(filterData[type])) {
-                    // @ts-ignore
-                    const defaultCategory = defaultType[category];
-                    if (foundry.utils.objectsEqual(data.values, defaultCategory.values)) continue;
-
-                    foundry.utils.setProperty(
-                        extractedData,
-                        `${type}.${category}.values`,
-                        data.values
-                    );
-                }
-            }
-
-            if (foundry.utils.isEmpty(extractedData)) {
-                localize.warn("browserFilter.empty");
-                return;
-            }
-
-            browser.close();
-
-            const filters = getFilters(actor, data.filterType, false) as ItemFilterBase[];
-
-            if (data.edit) {
-                const itemFilter = filters.find((x) => x.id === data.edit);
-
-                if (itemFilter) {
-                    itemFilter.filter = extractedData;
-                    setFilters(actor, data.filterType, filters);
-                    return;
-                }
-            }
-
-            const id = foundry.utils.randomID();
-            const itemFilter: ItemFilter = {
-                id,
-                name: id,
-                enabled: true,
-                filter: extractedData,
-                useDefault: true,
-            };
-
-            filters.unshift(itemFilter);
-            setFilters(actor, data.filterType, filters);
-        });
+        localize.info("browserPull.finished");
     }
 }
 
@@ -1126,7 +1037,7 @@ function lootSheetPF2eActivateListeners(
             }
 
             case "open-equipment-tab": {
-                return openEquipmentTab({ actor, type: "pull", owned: [] });
+                return openEquipmentTab({ actor, type: "pull" });
             }
 
             case "create-service": {
@@ -1199,9 +1110,7 @@ function lootSheetPF2eActivateListeners(
                 const serviceId = htmlClosest(el, "[data-service-id]")?.dataset.serviceId;
 
                 if (serviceId) {
-                    await sellService({ actor }, serviceId, {
-                        forceFree: action === "give-service",
-                    });
+                    onBuyService({ actor }, serviceId, action === "give-service");
                 }
 
                 break;
@@ -1234,37 +1143,28 @@ function isValidServiceBuyer(actor: Maybe<ClientDocument>): actor is ActorPF2e {
     );
 }
 
-async function sellService(
-    seller: TraderData,
-    serviceId: string,
-    { buyer, forceFree = false }: { buyer?: TraderData; forceFree?: boolean } = {}
-) {
-    if (!seller.actor?.isOfType("loot") || (buyer?.actor && !isValidServiceBuyer(buyer.actor)))
-        return;
-
-    if (!hasGMOnline()) {
-        return error("tool.noGM");
-    }
+async function onBuyService(seller: ServiceTradeData, serviceId: string, forceFree: boolean) {
+    if (!seller.actor?.isOfType("loot")) return;
 
     const service = getService(seller.actor, serviceId);
     if (!service?.enabled) return;
 
-    if (!buyer) {
+    const buyer: ServiceTradeData | undefined = (() => {
         const selected = R.only(canvas.tokens.controlled);
 
         if (isValidServiceBuyer(selected?.actor)) {
-            buyer = { actor: selected.actor, token: selected };
+            return { actor: selected.actor, token: selected };
         } else {
             const character = game.user.character;
 
             if (isValidServiceBuyer(character)) {
-                buyer = { actor: character };
+                return { actor: character };
             }
         }
+    })();
 
-        if (!buyer) {
-            return localize.warn("service.noBuyer");
-        }
+    if (!buyer) {
+        return localize.warn("service.noBuyer");
     }
 
     const notifyData = {
@@ -1283,30 +1183,97 @@ async function sellService(
         return localize.warn("service.noFunds", notifyData);
     }
 
-    const msgTrader = forceFree ? seller : buyer;
-    const msgOptions: ServiceMsgOptions = {
-        token: msgTrader.token,
-        tradeMsg: localize("service", forceFree ? "give" : "buy", notifyData),
-        flags: {
-            buyerUUID: buyer.actor.uuid,
-            sellerUUID: seller.actor.uuid,
-            serviceId: service.id,
-            forceFree,
-        },
-    };
+    const trader = forceFree ? seller : buyer;
 
-    return serviceMessage(msgTrader.actor, service, seller.actor, msgOptions);
+    serviceRequest({
+        forceFree,
+        serviceId,
+        traderActor: trader.actor,
+        traderToken: trader.token,
+        sellerActor: seller.actor,
+    });
 }
 
-function serviceCanBePurchased(service: ServiceFlag): service is ServiceFlag {
-    return !!service.enabled && (service.quantity ?? -1) !== 0;
+async function sellService(
+    { traderActor, traderToken, sellerActor, serviceId, forceFree }: ServiceOptions,
+    userId: string
+) {
+    const sendError = () => {
+        localize.error("service.error");
+    };
+
+    if (!sellerActor.isOfType("loot") || !isValidServiceBuyer(traderActor)) {
+        return sendError();
+    }
+
+    const services = getServices(sellerActor);
+    const service = services.find((service) => service.id === serviceId);
+    if (!service) {
+        return sendError();
+    }
+
+    const serviceRatio = getServicesRatio(sellerActor);
+    const originalPrice = getServicePrice(service);
+    const usedPrice = forceFree
+        ? null
+        : serviceRatio === 1
+        ? originalPrice
+        : originalPrice.scale(serviceRatio);
+
+    if (!forceFree) {
+        if (!serviceCanBePurchased(service)) {
+            return sendError();
+        }
+
+        const price = usedPrice!;
+        const quantity = service.quantity ?? -1;
+
+        if (price.copperValue > 0) {
+            if (await traderActor.inventory.removeCoins(price)) {
+                await sellerActor.inventory.addCoins(price);
+            } else {
+                return sendError();
+            }
+        }
+
+        if (quantity > 0) {
+            service.quantity = quantity - 1;
+            await setServices(sellerActor, services);
+        }
+    }
+
+    const macro = await getServiceMacro(service);
+    macro?.execute({
+        actor: traderActor,
+        service: {
+            seller: sellerActor,
+            usedPrice,
+            serviceRatio,
+            originalPrice,
+            name: service.name ?? service.id,
+            level: service.level ?? 0,
+            quantity: service.quantity ?? -1,
+            forceFree: forceFree,
+        },
+    } satisfies ServiceMacroData);
+
+    const msgOptions: ServiceMsgOptions = {
+        token: traderToken,
+        tradeMsg: localize("service", forceFree ? "give" : "buy", {
+            buyer: getHighestName(traderActor),
+            seller: getHighestName(sellerActor),
+        }),
+        userId,
+    };
+
+    return serviceMessage(traderActor, service, sellerActor, msgOptions);
 }
 
 async function serviceMessage(
     actor: ActorPF2e,
     service: ServiceFlag,
     seller: LootPF2e,
-    { token, tradeMsg, flags }: ServiceMsgOptions = {}
+    { token, tradeMsg, userId }: ServiceMsgOptions = {}
 ) {
     token ??= actor.getActiveTokens(false, true).at(0);
 
@@ -1319,6 +1286,7 @@ async function serviceMessage(
     });
 
     const msgData: ChatMessageCreateData<ChatMessagePF2e> = {
+        author: userId ?? game.user.id,
         style: CONST.CHAT_MESSAGE_STYLES.OTHER,
         content,
         speaker: ChatMessagePF2e.getSpeaker({
@@ -1327,11 +1295,11 @@ async function serviceMessage(
         }),
     };
 
-    if (flags) {
-        setFlagProperty(msgData, "service", flags);
-    }
-
     return ChatMessagePF2e.create(msgData);
+}
+
+function serviceCanBePurchased(service: ServiceFlag): service is ServiceFlag {
+    return !!service.enabled && (service.quantity ?? -1) !== 0;
 }
 
 async function exportServices(actor: LootPF2e, services: ServiceFlag[] = getServices(actor)) {
@@ -1684,46 +1652,32 @@ async function enrichService(service: ServiceFlag, ratio?: number): Promise<Serv
     };
 }
 
-class FiltersMenu extends Application {
-    actor: LootPF2e;
+class FiltersMenu extends foundry.applications.api.ApplicationV2 {
+    #actor: LootPF2e;
 
-    constructor(actor: LootPF2e) {
-        super();
+    static DEFAULT_OPTIONS: DeepPartial<ApplicationConfiguration> = {
+        classes: ["pf2e-hud-filters"],
+    };
 
-        this.actor = actor;
+    constructor(actor: LootPF2e, options: DeepPartial<ApplicationConfiguration> = {}) {
+        options.window ??= {};
+        options.window.title = localize("filters.title", actor);
+
+        super(options);
+
+        this.#actor = actor;
+
+        actor.apps[this.appId] = this;
     }
 
-    get id() {
-        return localize("filters.app");
-    }
-
-    get title() {
-        return localize("filters.title", this.actor);
-    }
-
-    get template() {
-        return templatePath("filters");
-    }
-
-    render(force?: boolean, options?: RenderOptions): this {
-        this.actor.apps[this.appId] = this;
-        return super.render(force, options);
-    }
-
-    async close(options?: { force?: boolean }) {
-        await super.close(options);
-        delete this.actor.apps[this.appId];
-    }
-
-    getData() {
-        const actor = this.actor;
-        const translate = localize.sub("filters");
+    async _prepareContext(options: ApplicationRenderOptions): Promise<FiltersMenuContext> {
+        const actor = this.#actor;
         const buyFilters = getFilters(actor, "buy", true);
         const sellFilters = getFilters(actor, "sell", true);
 
         const templateFilter = (filters: ExtractedFilter[]) => {
             const limit = filters.length - 1;
-            return (filter: ExtractedFilter, index: number) => ({
+            return (filter: ExtractedFilter, index: number): TemplateFilter => ({
                 ...filter,
                 purse:
                     filter.purse === Infinity
@@ -1737,7 +1691,6 @@ class FiltersMenu extends Application {
         };
 
         return {
-            i18n: translate.i18n,
             buyFilters: buyFilters.map(templateFilter(buyFilters)),
             sellFilters: sellFilters.map(templateFilter(sellFilters)),
             ratios: R.mapValues(RATIO, (ratio, type) => {
@@ -1749,28 +1702,33 @@ class FiltersMenu extends Application {
         };
     }
 
-    activateListeners($html: JQuery<HTMLElement>) {
-        const html = $html[0];
+    _renderHTML(
+        context: ApplicationRenderContext,
+        options: ApplicationRenderOptions
+    ): Promise<string> {
+        return render("filters", context);
+    }
+
+    _replaceHTML(result: string, content: HTMLElement, options: ApplicationRenderOptions): void {
+        content.innerHTML = result;
+        this.#activateListeners(content);
+    }
+
+    _onClose() {
+        delete this.#actor.apps[this.appId];
+    }
+
+    #activateListeners(html: HTMLElement) {
         const browser = game.pf2e.compendiumBrowser;
         const tab = browser.tabs.equipment;
-
-        addListenerAll(html, "[data-action='add-filter']", (even, el) => {
-            const { type } = elementDataset<{ type: ItemFilterType }>(el);
-            openEquipmentTab({
-                actor: this.actor,
-                type: "filter",
-                filterType: type,
-                edit: false,
-            });
-        });
+        const actor = this.#actor;
 
         const getItemData = (el: HTMLElement) => {
-            const data = elementDataset<{ id: string; type: ItemFilterType }>(
-                htmlClosest(el, "[data-id]")!
-            );
+            const parent = htmlClosest(el, "[data-id]");
+            const data = elementDataset<{ id: string; type: ItemFilterType }>(parent);
             const { type, id } = data;
 
-            const itemFilters = getFilters(this.actor, type, true);
+            const itemFilters = getFilters(actor, type, true);
             const filterIndex = itemFilters.findIndex((x) => x.id === id);
 
             return {
@@ -1779,6 +1737,90 @@ class FiltersMenu extends Application {
                 filterIndex,
             };
         };
+
+        addListenerAll(html, "[data-action", async (even, el) => {
+            const action = el.dataset.action as FiltersMenuEventAction;
+
+            switch (action) {
+                case "add-filter": {
+                    const { type } = elementDataset<{ type: ItemFilterType }>(el);
+                    openEquipmentTab({ actor, type: "filter", filterType: type, edit: false });
+                    break;
+                }
+
+                case "move-filter": {
+                    const { itemFilters, filterIndex, type } = getItemData(el);
+                    const { direction } = elementDataset<{ direction: "up" | "down" }>(el);
+                    const newIndex = direction === "up" ? filterIndex - 1 : filterIndex + 1;
+
+                    if (newIndex < 0 || newIndex >= itemFilters.length) return;
+
+                    const newFilters = R.swapIndices(itemFilters, filterIndex, newIndex);
+                    setFilters(actor, type, newFilters);
+                    break;
+                }
+
+                case "delete-filter": {
+                    const { type, filterIndex, itemFilters } = getItemData(el);
+                    if (filterIndex === -1) return;
+
+                    const filter = itemFilters.at(filterIndex);
+                    const confirm = await confirmDialog({
+                        title: localize("filters.delete.title"),
+                        content: localize("filters.delete.content", {
+                            name: filter!.name || filter!.id,
+                        }),
+                    });
+
+                    if (confirm) {
+                        itemFilters.splice(filterIndex, 1);
+                        setFilters(actor, type, itemFilters);
+                    }
+                    break;
+                }
+
+                case "edit-filter": {
+                    const { type, id, filterIndex, itemFilters } = getItemData(el);
+                    const defaultData = await tab.getFilterData();
+                    const itemFilter = itemFilters.at(filterIndex)?.filter;
+                    if (!itemFilter) return;
+
+                    const filter = foundry.utils.mergeObject(defaultData, itemFilter);
+
+                    if (itemFilter.ranges) {
+                        for (const range of Object.values(filter.ranges)) {
+                            range.isExpanded = true;
+                        }
+                    }
+
+                    if (itemFilter.level) {
+                        filter.level.isExpanded = true;
+                    }
+
+                    if (itemFilter.source) {
+                        filter.source.isExpanded = true;
+                    }
+
+                    for (const key of Object.keys(itemFilter.checkboxes ?? {})) {
+                        const checkbox = filter.checkboxes[key as keyof typeof filter.checkboxes];
+                        if (checkbox) {
+                            checkbox.isExpanded = true;
+                        }
+                    }
+
+                    openEquipmentTab(
+                        {
+                            actor: actor,
+                            type: "filter",
+                            filterType: type,
+                            edit: id,
+                        },
+                        filter
+                    );
+                    break;
+                }
+            }
+        });
 
         addListenerAll(html, "input", "change", (event, el: HTMLInputElement) => {
             const { itemFilters, filterIndex, type } = getItemData(el);
@@ -1789,84 +1831,13 @@ class FiltersMenu extends Application {
             const value = getInputValue(el);
 
             foundry.utils.setProperty(filter, key, value);
-            setFilters(this.actor, type, itemFilters);
+            setFilters(actor, type, itemFilters);
         });
 
         addListenerAll(html, "input[type='text'], input[type='number']", "keydown", (event, el) => {
             if (event.key === "Enter") {
                 el.blur();
             }
-        });
-
-        addListenerAll(html, "[data-action='move-filter']", (event, el) => {
-            const { itemFilters, filterIndex, type } = getItemData(el);
-            const { direction } = elementDataset<{ direction: "up" | "down" }>(el);
-            const newIndex = direction === "up" ? filterIndex - 1 : filterIndex + 1;
-
-            if (newIndex < 0 || newIndex >= itemFilters.length) return;
-
-            const newFilters = R.swapIndices(itemFilters, filterIndex, newIndex);
-            setFilters(this.actor, type, newFilters);
-        });
-
-        addListenerAll(html, "[data-action='delete-filter']", async (event, el) => {
-            const { type, filterIndex, itemFilters } = getItemData(el);
-            if (filterIndex === -1) return;
-
-            const filter = itemFilters.at(filterIndex);
-            const confirm = await Dialog.confirm({
-                title: localize("filters.delete.title"),
-                content: localize("filters.delete.content", { name: filter!.name || filter!.id }),
-            });
-
-            if (confirm) {
-                itemFilters.splice(filterIndex, 1);
-                setFilters(this.actor, type, itemFilters);
-            }
-        });
-
-        addListenerAll(html, "[data-action='edit-filter']", async (event, el) => {
-            const { type, id, filterIndex, itemFilters } = getItemData(el);
-            const defaultData = await tab.getFilterData();
-            const itemFilter = itemFilters.at(filterIndex)?.filter;
-            if (!itemFilter) return;
-
-            const filter = foundry.utils.mergeObject(defaultData, itemFilter);
-
-            if (itemFilter.ranges) {
-                for (const key in itemFilter.ranges) {
-                    const range = filter.ranges[key as keyof EquipmentFilters["ranges"]];
-                    range.isExpanded = true;
-                }
-            }
-
-            if (itemFilter.sliders) {
-                for (const key in itemFilter.sliders) {
-                    const slider = filter.sliders[key as keyof EquipmentFilters["sliders"]];
-                    slider.isExpanded = true;
-                }
-            }
-
-            if (itemFilter.checkboxes) {
-                for (const key in itemFilter.checkboxes) {
-                    const checkbox = filter.checkboxes[key as keyof EquipmentFilters["checkboxes"]];
-
-                    checkbox.isExpanded = true;
-                    for (const selected of checkbox.selected) {
-                        checkbox.options[selected].selected = true;
-                    }
-                }
-            }
-
-            openEquipmentTab(
-                {
-                    actor: this.actor,
-                    type: "filter",
-                    filterType: type,
-                    edit: id,
-                },
-                filter
-            );
         });
     }
 }
@@ -1877,7 +1848,11 @@ async function openEquipmentTab(data: BrowserData, filters?: EquipmentFilters) {
 
     deleteInMemory(browser);
     setInMemory(browser, data);
-    tab.open(filters ?? (await tab.getFilterData()));
+
+    browser.openTab("equipment", {
+        filter: filters ?? (await tab.getFilterData()),
+        hideNavigation: true,
+    });
 }
 
 function getFilters<
@@ -1943,6 +1918,8 @@ function clampPriceRatio(type: ItemFilterType, value: number | undefined) {
 
 type ServiceEventAction = "open-macros" | "edit-image" | "open-macro-sheet" | "delete-macro";
 
+type FiltersMenuEventAction = "add-filter" | "move-filter" | "delete-filter" | "edit-filter";
+
 type LootSheetActionEvent =
     | "open-equipment-tab"
     | "open-filters-menu"
@@ -1958,11 +1935,6 @@ type LootSheetActionEvent =
     | "increase-service"
     | "export-services"
     | "import-services";
-
-type PacketData = TradeData & {
-    priceData: Coins;
-    filterId: string;
-};
 
 type ItemFilterType = "buy" | "sell";
 
@@ -1988,7 +1960,7 @@ type ExtractedFilter<F extends ItemFilter = ItemFilter> = Omit<F, "ratio" | "pur
     purse: number;
 };
 
-type TraderData = {
+type ServiceTradeData = {
     actor: ActorPF2e;
     token?: TokenPF2e;
 };
@@ -2011,17 +1983,10 @@ type ServicesExportRenderData = {
     hasMany: boolean;
 };
 
-type ServiceMsgFlag = {
-    buyerUUID: string;
-    sellerUUID: string;
-    serviceId: string;
-    forceFree: boolean;
-};
-
 type ServiceMsgOptions = {
     token?: TokenPF2e | TokenDocumentPF2e | null;
     tradeMsg?: string;
-    flags?: ServiceMsgFlag;
+    userId?: string;
 };
 
 type ServiceData = Required<ServiceFlag> & {
@@ -2065,11 +2030,47 @@ type ServiceMacroData = {
     };
 };
 
+type BrowserPullMenuContext = {
+    owned: string[];
+    results: CompendiumBrowserIndexData[];
+};
+
+type FiltersMenuContext = {
+    buyFilters: TemplateFilter[];
+    sellFilters: TemplateFilter[];
+    ratios: typeof RATIO;
+};
+
+type TemplateFilter = Omit<ExtractedFilter, "purse"> & {
+    purse: number | undefined;
+    cannotUp: boolean;
+    cannotDown: boolean;
+};
+
+type BuyItemOptions = {
+    filterId: string;
+    priceData: Coins;
+    targetActor: LootPF2e;
+    item: PhysicalItemPF2e<ActorPF2e>;
+    quantity: number;
+};
+
+type ServiceOptions = {
+    traderActor: ActorPF2e;
+    traderToken?: TokenPF2e | TokenDocumentPF2e;
+    sellerActor: LootPF2e;
+    serviceId: string;
+    forceFree: boolean;
+};
+
+type BetterMerchantPacket =
+    | ExtractSocketOptions<"buy", BuyItemOptions>
+    | ExtractSocketOptions<"service", ServiceOptions>;
+
 type BrowserData =
     | {
           type: "pull";
           actor: LootPF2e;
-          owned: string[];
       }
     | {
           type: "filter";
