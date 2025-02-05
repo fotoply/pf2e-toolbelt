@@ -28,6 +28,20 @@
             },
             "sending": "Sending"
         },
+        "keybindings": {
+            "droppeth": {
+                "droppeth": {
+                    "name": "Droppeth Modifier",
+                    "hint": "Key held when dropping an item on the ground."
+                }
+            },
+            "conditionManager": {
+                "manage": {
+                    "name": "Manage Condition",
+                    "hint": "Key held when dropping a condition to manage its duration."
+                }
+            }
+        },
         "settings": {
             "requiresReload": "(Requires Reload)",
             "global": {
@@ -306,6 +320,13 @@
                 "identifyPartials": {
                     "name": "Auto Identify Similar Items",
                     "hint": "Should 'similar' items also be identified when using the 'Automatically identify known items' option."
+                }
+            },
+            "conditionManager": {
+                "title": "Condition Manager",
+                "enabled": {
+                    "name": "Enabled",
+                    "hint": "Let you turn a regular condition into an effet+condition combo with duration."
                 }
             }
         },
@@ -727,6 +748,13 @@
         },
         "hideDamage": {
             "reveal": "Reveal damage to players"
+        },
+        "conditionManager": {
+            "manager": {
+                "title": "Condition Manager - {name}",
+                "add": "Create",
+                "cancel": "Cancel"
+            }
         }
     }
 }

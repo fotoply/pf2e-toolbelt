@@ -24,6 +24,7 @@ import { undergroundTool } from "./tools/underground";
 import { unidedTool } from "./tools/unided";
 import { untargetTool } from "./tools/untarget";
 import { useButtonTool } from "./tools/useButton";
+import { conditionManager } from "./tools/conditionManager";
 
 MODULE.register("pf2e-toolbelt");
 
@@ -32,6 +33,7 @@ const TOOLS: ToolConfig[] = [
     actionableTool,
     arpTool,
     betterMerchantTool,
+    conditionManager,
     debugTool,
     untargetTool,
     droppethTool,
@@ -94,6 +96,17 @@ const TOOLS: ToolConfig[] = [
 
 Hooks.once("init", () => {
     const isGM = userIsGM();
+
+    for (const { name: toolName, keybinds } of TOOLS) {
+        for (const keybind of keybinds ?? []) {
+            const name = keybind.name;
+            game.keybindings.register(MODULE.id, name, {
+                ...keybind,
+                name: MODULE.path("keybindings", toolName, name, "name"),
+                hint: MODULE.path("keybindings", toolName, name, "hint"),
+            });
+        }
+    }
 
     registerToolsSettings(TOOLS, isGM);
 

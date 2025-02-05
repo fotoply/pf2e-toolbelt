@@ -20,6 +20,8 @@ import {
 import { createTool } from "../tool";
 import { globalSettings } from "./global";
 
+let DROPPETH = false;
+
 const DEFAULT_IMG = "systems/pf2e/icons/default-icons/backpack.svg";
 
 const { config, settings, hooks, wrapper, socket, localize, getFlag, setFlagProperty } = createTool(
@@ -70,6 +72,18 @@ const { config, settings, hooks, wrapper, socket, localize, getFlag, setFlagProp
                 callback: actorOnEmbeddedDocumentChange,
             },
         ],
+        keybinds: [
+            {
+                name: "droppeth",
+                editable: [{ key: "ControlLeft", modifiers: [] }],
+                onDown: () => {
+                    DROPPETH = true;
+                },
+                onUp: () => {
+                    DROPPETH = false;
+                },
+            },
+        ],
         api: {
             droppethRequest: (...args: Parameters<typeof droppethRequest>) => {
                 droppethRequest(...args);
@@ -95,12 +109,7 @@ const { config, settings, hooks, wrapper, socket, localize, getFlag, setFlagProp
 const droppethRequest = createCallOrEmit("drop", droppethItem, socket);
 
 function onDropCanvasData(canvas: CanvasPF2e, data: DropCanvasData) {
-    if (
-        data.type !== "Item" ||
-        !R.isString(data.uuid) ||
-        !game.keyboard.isModifierActive("Control")
-    )
-        return true;
+    if (!DROPPETH || data.type !== "Item" || !R.isString(data.uuid)) return true;
 
     const item = fromUuidSync<ItemPF2e>(data.uuid);
     if (!item || !itemIsOfType(item, "physical")) return true;
@@ -141,14 +150,20 @@ function actorOnEmbeddedDocumentChange(this: ActorPF2e, wrapped: libWrapper.Regi
             return;
         }
 
-        const onlyItem = R.only(this.inventory.contents);
+        const onlyItem = R.pipe(
+            this.inventory.contents,
+            R.filter((item) => !item.isInContainer),
+            R.only()
+        );
         const { img, name } = onlyItem ?? getDefaultData();
 
-        const tokenUpdate: Record<string, any> = { "texture.src": img, name };
-
-        if (settings.light) {
-            tokenUpdate.light = getLightSource(onlyItem);
-        }
+        const tokenUpdate: DeepPartial<TokenDocumentPF2e["_source"]> = {
+            name,
+            texture: {
+                src: img,
+            },
+            light: getLightSource(onlyItem),
+        };
 
         await this.update({ img, name });
         await token?.update(tokenUpdate);
@@ -217,11 +232,8 @@ async function droppethItem({ item, x, y, quantity }: DroppethOptions, userId: s
         height: 0.5,
         texture: { src: img },
         ring: { enabled: false },
+        light: getLightSource(item),
     };
-
-    if (settings.light) {
-        tokenSource.light = getLightSource(item);
-    }
 
     const tokenDocument = await actor.getTokenDocument(tokenSource, { parent: scene });
     const token = canvas.tokens.createObject(
@@ -295,7 +307,7 @@ function getDroppethToken(actor: LootPF2e) {
 }
 
 function getLightSource(item?: PhysicalItemPF2e) {
-    const itemRules = item && item.quantity > 0 ? item.system.rules : undefined;
+    const itemRules = settings.light && item && item.quantity > 0 ? item.system.rules : undefined;
     const lightRule = itemRules?.find(
         (rule): rule is TokenLightRuleElement => rule.key === "TokenLight"
     );

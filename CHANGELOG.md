@@ -1,3 +1,62 @@
+# 2.29.1
+
+-   `Condition Manager`:
+    -   set default options to `1` `Rounds` instead of `Unlimited`
+    -   add `Counter` row to manually change its value before applying the condition if needed
+    -   small improvements to the number fields to avoid invalid entries
+
+# 2.29.0
+
+-   add new `Condition Manager` feature
+    -   to use it, you need to setup a key to hold it while adding a condition to an actor
+    -   a condition manager popup will show and let you set up a duration, expiration anf if the effect is unidentified (GM only)
+    -   an effect handling the condition will be created in its place to handle those options
+
+# 2.28.0
+
+-   `Droppeth`:
+    -   add `Droppeth Modifier` keybind
+        -   allow you to change the key that needs to be held to drop an item on the ground
+-   `Merge Damages`:
+    -   significantly improve the handling of damage notes
+        -   it should now avoid duplication of notes even in more complex cases
+        -   improve styling of notes in chat message
+        -   fix awkward "comma" character sometimes showing between notes
+-   `Target Helper`:
+    -   remove the select icon from target headers
+        -   clicking on the target header replace that functionality (double click to open the sheet included)
+        -   players can now also use it
+
+# 2.27.0
+
+-   this is a system `6.8.5` update
+-   `No Bulk`:
+    -   fix actor breaking error due to latest system changes
+
+# 2.26.2
+
+-   `Target Helper`:
+    -   fix dropped inline checks not accounting for `adjustment`
+
+# 2.26.1
+
+-   `Target Helper`:
+    -   add the roll message in the `pf2e-toolbelt.rollSave` hook
+
+# 2.26.0
+
+-   `Use Button`:
+    -   add an extra flavor text for consumables `use` to make it more obvious
+-   `Target Helper`:
+    -   add two custom hooks when a save is rolled/rerolled
+
+# 2.25.2
+
+-   `Droppeth`:
+    -   only count root items (exclude items inside containers) when it comes to check if a single item exists in a droppeth actor's inventory
+-   `Stances`:
+    -   always removes old stances before adding the new one (or non at all)
+
 # 2.25.1
 
 -   `Global`:

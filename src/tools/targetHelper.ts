@@ -1,5 +1,4 @@
 import {
-    AbilityTrait,
     ActorPF2e,
     CharacterPF2e,
     ChatMessagePF2e,
@@ -32,6 +31,7 @@ import {
     firstElementWithText,
     getActiveModule,
     getChoiceSetSelection,
+    getExtraRollOptions,
     getItemChatTraits,
     htmlClosest,
     htmlQuery,
@@ -791,11 +791,7 @@ async function addChatMessageListeners(
             target.actor?.sheet._onDrop(event);
         });
 
-        addListener(targetElement, "[data-action='ping-target']", () => {
-            canvas.ping(target.center);
-        });
-
-        addListener(targetElement, "[data-action='select-target']", (event) => {
+        targetElement.addEventListener("click", () => {
             const now = Date.now();
             const dt = now - lastClickTime;
 
@@ -808,12 +804,19 @@ async function addChatMessageListeners(
             target.object?.control({ releaseOthers: true });
         });
 
+        addListener(targetElement, "[data-action='ping-target']", (event) => {
+            event.stopPropagation();
+            canvas.ping(target.center);
+        });
+
         if (save) {
             addListener(targetElement, "[data-action='roll-save']", (event) => {
+                event.stopPropagation();
                 rollSaves(event, message, save, [target]);
             });
 
             addListener(targetElement, "[data-action='reroll-save']", (event) => {
+                event.stopPropagation();
                 rerollSave(event, message, save, target);
             });
         }
@@ -824,8 +827,11 @@ function isValidCheckLink(el: Maybe<Element | EventTarget>): el is HTMLAnchorEle
     dataset: CheckLinkData;
 } {
     if (!(el instanceof HTMLAnchorElement) || !el.classList.contains("inline-check")) return false;
-    const { pf2Dc, against, itemUuid, pf2Check } = el.dataset;
-    return (!!pf2Dc || !!(against && itemUuid)) && SAVE_TYPES.includes(pf2Check as SaveType);
+    const { pf2Dc, against, itemUuid, pf2Check, rollerRole } = el.dataset;
+    return (
+        ((rollerRole !== "origin" && !!pf2Dc) || !!(against && itemUuid)) &&
+        SAVE_TYPES.includes(pf2Check as SaveType)
+    );
 }
 
 let BASIC_SAVE_REGEX: RegExp;
@@ -833,14 +839,17 @@ function getSaveLinkData(el: HTMLAnchorElement & { dataset: CheckLinkData }): Sa
     const dataset = el.dataset;
 
     const dc = (() => {
+        const adjustment = Number(dataset.pf2Adjustment) || 0;
+
         if ("pf2Dc" in dataset) {
-            return Number(dataset.pf2Dc);
+            return Number(dataset.pf2Dc) + adjustment;
         }
 
         const actor = fromUuidSync<ItemPF2e>(dataset.itemUuid)?.actor;
-        if (!actor) return;
+        const statisticDc = actor?.getStatistic(dataset.against)?.dc.value;
+        if (!statisticDc) return;
 
-        return actor.getStatistic(dataset.against)?.dc.value;
+        return statisticDc + adjustment;
     })();
 
     if (dc == null || isNaN(dc)) return null;
@@ -864,7 +873,7 @@ function getSaveLinkData(el: HTMLAnchorElement & { dataset: CheckLinkData }): Sa
         dc,
         basic: false,
         item: item?.uuid,
-        statistic: dataset.pf2Check as SaveType,
+        statistic: dataset.pf2Check,
         options: splitListString(dataset.pf2RollOptions ?? ""),
         traits: splitListString(dataset.pf2Traits ?? ""),
     };
@@ -1234,17 +1243,6 @@ function createSetTargetsBtn(message: ChatMessagePF2e, isAnchor = false) {
     return btnElement;
 }
 
-function getExtraRollOptions(msgFlag: MessageFlag) {
-    const maybeTraits = msgFlag.traits ?? [];
-    const additionalTraits = maybeTraits.filter(
-        (t): t is AbilityTrait => t in CONFIG.PF2E.actionTraits
-    );
-
-    return R.unique(
-        [maybeTraits, additionalTraits.map((t) => `item:trait:${t}`), msgFlag.options ?? []].flat()
-    );
-}
-
 async function rollSaves(
     event: MouseEvent,
     message: ChatMessagePF2e,
@@ -1315,6 +1313,14 @@ async function rollSaves(
                         };
 
                         updates[target.id] = data;
+
+                        Hooks.callAll("pf2e-toolbelt.rollSave", {
+                            roll,
+                            message,
+                            rollMessage: msg,
+                            target,
+                            data,
+                        } satisfies RollSaveHook);
 
                         resolve();
                     },
@@ -1471,6 +1477,15 @@ async function rerollSave(
             modifier: 10,
         });
     }
+
+    Hooks.callAll("pf2e-toolbelt.rerollSave", {
+        oldRoll,
+        newRoll,
+        keptRoll,
+        message,
+        target,
+        data,
+    } satisfies RerollSaveHook);
 
     if (game.user.isGM || message.isAuthor) {
         setFlag(message, "saves", target.id, data);
@@ -1863,10 +1878,13 @@ type MessageFlag = {
     splashTargets?: string[];
 };
 
-type CheckLinkData = { pf2Check: SaveType } & (
-    | { against: string; itemUuid: string }
-    | { pf2Dc: StringNumber }
-);
+type CheckLinkData = {
+    pf2Check: SaveType;
+    pf2Adjustment?: StringNumber;
+    pf2RollOptions?: string;
+    pf2Traits?: string;
+    isBasic?: boolean;
+} & ({ against: string; itemUuid: string } | { pf2Dc: StringNumber });
 
 type TargetSaveResult = Omit<MessageTargetSave, "notes"> & {
     canReroll: boolean;
@@ -1932,6 +1950,23 @@ type MessageData = {
     hasTargets: boolean;
     hasSplashTargets: boolean;
     splashIndex: number;
+};
+
+type RollSaveHook = {
+    roll: Rolled<CheckRoll>;
+    message: ChatMessagePF2e;
+    rollMessage: ChatMessagePF2e;
+    target: TokenDocumentPF2e;
+    data: MessageTargetSave;
+};
+
+type RerollSaveHook = {
+    oldRoll: Rolled<CheckRoll>;
+    newRoll: Rolled<CheckRoll>;
+    keptRoll: Rolled<CheckRoll>;
+    message: ChatMessagePF2e;
+    target: TokenDocumentPF2e;
+    data: MessageTargetSave;
 };
 
 export {
