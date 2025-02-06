@@ -5,6 +5,7 @@ import {
     ApplicationRenderOptions,
     ConditionPF2e,
     DurationData,
+    EffectContextData,
     EffectSource,
     GrantItemSource,
     ItemPF2e,
@@ -52,9 +53,12 @@ const { config, settings, hook, localize, render } = createTool({
 
 class ConditionManager extends foundry.applications.api.ApplicationV2 {
     #actor: ActorPF2e;
-    #condition: ConditionPF2e;
-    #data: ConditionManagerData;
+    #origin: { context: EffectContextData; value: boolean } | null;
     #counter: { value: number; default: number } | undefined;
+    #rule: GrantItemSource & { alterations: any[] };
+    #effect: PreCreate<EffectSource> & {
+        system: { unidentified: boolean; duration: DurationData };
+    };
 
     static DEFAULT_OPTIONS: DeepPartial<ApplicationConfiguration> = {
         classes: ["pf2e-toolbelt-condition-manager"],
@@ -71,16 +75,59 @@ class ConditionManager extends foundry.applications.api.ApplicationV2 {
 
         this.#actor = condition.actor;
 
-        this.#condition = condition.clone();
+        this.#rule = {
+            key: "GrantItem",
+            uuid: condition.sourceId,
+            onDeleteActions: {
+                grantee: "restrict",
+            },
+            inMemoryOnly: true,
+            alterations: [],
+        };
 
-        this.#data = {
-            unidentified: false,
-            duration: {
-                expiry: "turn-start",
-                unit: "rounds",
-                value: 1,
+        if (condition._source.system.persistent) {
+            this.#rule.alterations.push({
+                mode: "override",
+                property: "persistent-damage",
+                value: condition._source.system.persistent,
+            });
+        }
+
+        this.#effect = {
+            type: "effect",
+            name: `${game.i18n.localize("TYPES.Item.effect")}: ${condition.name}`,
+            img: condition.img,
+            system: {
+                tokenIcon: { show: false },
+                unidentified: false,
+                duration: {
+                    expiry: "turn-start",
+                    unit: "rounds",
+                    value: 1,
+                },
+                rules: [this.#rule],
             },
         };
+
+        const origin = this.#actor.combatant?.encounter.combatant;
+        const originActorUUID = origin?.actor?.uuid;
+
+        this.#origin =
+            originActorUUID && originActorUUID !== this.#actor.uuid
+                ? {
+                      context: {
+                          origin: {
+                              actor: originActorUUID,
+                              token: origin.token?.uuid ?? null,
+                              item: null,
+                              spellcasting: null,
+                          },
+                          roll: null,
+                          target: null,
+                      },
+                      value: true,
+                  }
+                : null;
 
         this.#counter = condition.system.value.isValued
             ? {
@@ -88,6 +135,10 @@ class ConditionManager extends foundry.applications.api.ApplicationV2 {
                   default: condition.system.value.value ?? 1,
               }
             : undefined;
+    }
+
+    get system() {
+        return this.#effect.system;
     }
 
     async close(options: ApplicationClosingOptions = {}): Promise<this> {
@@ -98,7 +149,8 @@ class ConditionManager extends foundry.applications.api.ApplicationV2 {
     async _prepareContext(options: ApplicationRenderOptions): Promise<ConditionManagerContext> {
         return {
             isGM: game.user.isGM,
-            data: this.#data,
+            data: this.system,
+            origin: this.#origin?.value ?? null,
             timeUnits: CONFIG.PF2E.timeUnits,
             counter: this.#counter,
             expiryOptions: [
@@ -123,39 +175,19 @@ class ConditionManager extends foundry.applications.api.ApplicationV2 {
     }
 
     #createEffect() {
-        const condition = this.#condition;
-        const rule: GrantItemSource = {
-            key: "GrantItem",
-            uuid: condition.sourceId,
-            onDeleteActions: {
-                grantee: "restrict",
-            },
-            inMemoryOnly: true,
-        };
-
         if (this.#counter && this.#counter.value > 1) {
-            rule.alterations = [
-                {
-                    mode: "override",
-                    property: "badge-value",
-                    value: this.#counter.value,
-                },
-            ];
+            this.#rule.alterations.push({
+                mode: "override",
+                property: "badge-value",
+                value: this.#counter.value,
+            });
         }
 
-        const prefix = game.i18n.localize("TYPES.Item.effect");
-        const effect: PreCreate<EffectSource> = {
-            type: "effect",
-            name: `${prefix}: ${condition.name}`,
-            img: condition.img,
-            system: {
-                ...this.#data,
-                tokenIcon: { show: false },
-                rules: [rule],
-            },
-        };
+        if (this.#origin?.value) {
+            this.system.context = this.#origin.context;
+        }
 
-        this.#actor.createEmbeddedDocuments("Item", [effect]);
+        this.#actor.createEmbeddedDocuments("Item", [this.#effect]);
     }
 
     #activateListeners(html: HTMLElement) {
@@ -167,56 +199,58 @@ class ConditionManager extends foundry.applications.api.ApplicationV2 {
                 const value = el.value as DurationData["unit"];
                 const isUnit = !["unlimited", "encounter"].includes(value);
 
-                this.#data.duration.unit = value;
-                this.#data.duration.value = isUnit ? 1 : -1;
-                this.#data.duration.expiry = isUnit ? "turn-start" : null;
+                this.system.duration.unit = value;
+                this.system.duration.value = isUnit ? 1 : -1;
+                this.system.duration.expiry = isUnit ? "turn-start" : null;
 
                 this.render();
             }
         );
 
-        addListener(
-            html,
-            "[name='system.duration.expiry']",
-            "change",
-            (event, el: HTMLSelectElement) => {
-                this.#data.duration.expiry = el.value as DurationData["expiry"];
+        addListenerAll(html, "[name]", "change", (event, el: HTMLInputElement) => {
+            switch (el.name as EventChangeName) {
+                case "origin": {
+                    this.#origin!.value = el.checked;
+                    return;
+                }
+
+                case "system.badge.value": {
+                    const value = el.valueAsNumber;
+
+                    this.#counter!.value = isNaN(value)
+                        ? this.#counter!.default
+                        : Math.max(el.valueAsNumber, 1);
+
+                    return this.render();
+                }
+
+                case "system.duration.unit": {
+                    const value = el.value as DurationData["unit"];
+                    const isUnit = !["unlimited", "encounter"].includes(value);
+
+                    this.system.duration.unit = value;
+                    this.system.duration.value = isUnit ? 1 : -1;
+                    this.system.duration.expiry = isUnit ? "turn-start" : null;
+
+                    return this.render();
+                }
+
+                case "system.duration.expiry": {
+                    this.system.duration.expiry = el.value as DurationData["expiry"];
+                    return;
+                }
+
+                case "system.duration.value": {
+                    this.system.duration.value = Math.max(el.valueAsNumber || 0, 0);
+                    return this.render();
+                }
+
+                case "system.unidentified": {
+                    this.system.unidentified = el.checked;
+                    return;
+                }
             }
-        );
-
-        addListener(
-            html,
-            "[name='system.duration.value']",
-            "change",
-            (event, el: HTMLInputElement) => {
-                this.#data.duration.value = Math.max(el.valueAsNumber || 0, 0);
-                this.render();
-            }
-        );
-
-        addListener(
-            html,
-            "[name='system.unidentified']",
-            "change",
-            (event, el: HTMLInputElement) => {
-                this.#data.unidentified = el.checked;
-            }
-        );
-
-        addListener(
-            html,
-            "[name='system.badge.value']",
-            "change",
-            (event, el: HTMLInputElement) => {
-                const value = el.valueAsNumber;
-
-                this.#counter!.value = isNaN(value)
-                    ? this.#counter!.default
-                    : Math.max(el.valueAsNumber, 1);
-
-                this.render();
-            }
-        );
+        });
 
         addListenerAll(html, "[data-action]", (event, el) => {
             switch (el.dataset.action as "add" | "cancel") {
@@ -239,6 +273,14 @@ function onPreCreateItem(item: ItemPF2e<ActorPF2e>) {
     return false;
 }
 
+type EventChangeName =
+    | "origin"
+    | "system.badge.value"
+    | "system.duration.unit"
+    | "system.duration.expiry"
+    | "system.duration.value"
+    | "system.unidentified";
+
 type ConditionManagerData = {
     duration: DurationData;
     unidentified: boolean;
@@ -247,6 +289,7 @@ type ConditionManagerData = {
 type ConditionManagerContext = {
     isGM: boolean;
     data: ConditionManagerData;
+    origin: boolean | null;
     timeUnits: typeof CONFIG.PF2E.timeUnits;
     counter: { value: number; default: number } | undefined;
     expiryOptions: {
