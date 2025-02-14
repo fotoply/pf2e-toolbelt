@@ -1,3 +1,21 @@
+# 2.30.3
+
+-   `Condition Manager`:
+    -   fix adding a condition that also add other conditions preventing from closing the character sheet
+        -   this is actually a system bug, not related to the module itself
+
+# 2.30.2
+
+-   `Condition Manager`:
+    -   revert latest default change of `Expire On`
+
+# 2.30.1
+
+-   `Condition Manager`:
+    -   change the default `Expire On` to be `End of Turn` as this is the default behavior of conditions
+    -   replace the `Current Combatant is Origin?` checkbox with a `Origin` select
+        -   you can pick any combatant from the combat
+
 # 2.30.0
 
 -   `Condition Manager`:
