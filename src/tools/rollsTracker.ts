@@ -294,7 +294,8 @@ class RollsTracker extends foundry.applications.api.ApplicationV2 {
                           (actor) =>
                               !actor.isToken &&
                               actor.isOfType("creature") &&
-                              actor.testUserPermission(user, "OWNER")
+                              actor.testUserPermission(user, "OWNER") &&
+                              actor.parties.size > 0
                       ),
                 R.isTruthy
             );
