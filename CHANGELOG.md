@@ -1,3 +1,24 @@
+# 2.33.2
+
+-   `Better Merchant`:
+    -   fix items with runes not having their price updated by filters
+    -   fix filters `Price Ratio` field being too small
+
+# 2.33.1
+
+-   `Condition Manager`:
+    -   fix players being able to see the name of creatures in the `Origin` select when they shouldn't (due to settings)
+
+# 2.33.0
+
+-   `Condition Manager`:
+    -   `Origin` now defaults to the current combatant instead of the target's
+    -   add `Label` field
+        -   the field will give you a preview the effect label based on the selected origin
+        -   you can alter the label instead of using the auto generated entry
+-   `Target Helper`:
+    -   do not highlight the save icon indicating `Modifiers Matter` existing in the tooltip if said modifiers aren't shown to the user (due to settings)
+
 # 2.32.2
 
 -   `Hide Damage`:
