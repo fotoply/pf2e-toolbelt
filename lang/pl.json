@@ -26,6 +26,8 @@
                 "staff": "Kostur",
                 "charges": "Ładunki"
             },
+            "gmOnly": "Tylko MG",
+            "reloadRequired": "Wymaga przeładowania",
             "sending": "Wysyłanie"
         },
         "keybindings": {
@@ -39,6 +41,16 @@
                 "manage": {
                     "name": "Zarządzanie stanem",
                     "hint": "Klawisz przytrzymywany podczas porzucania stanu w celu zarządzania jego czasem trwania."
+                }
+            },
+            "teleport": {
+                "teleport": {
+                    "name": "Teleport tokenów",
+                    "hint": "Klawisz przytrzymany podczas klikania sceny teleportuje wszystkie wybrane tokeny."
+                },
+                "unselect": {
+                    "name": "Teleport tokenów (Odznacz)",
+                    "hint": "Przytrzymanie klawisza podczas klikania sceny powoduje teleportację wszystkich wybranych tokenów. Usunięcie zaznaczenia tokenów po naciśnięciu klawisza daje nieograniczony widok na całą scenę."
                 }
             }
         },
@@ -326,7 +338,7 @@
                 "title": "Menedżer stanów",
                 "enabled": {
                     "name": "Włączone",
-                    "hint": "Pozwala zamienić zwykły stan w kombinację efekt+stan z czasem trwania."
+                    "hint": "Przeciągnij stan, przytrzymując zdefiniowane powiązanie klawiszy, aby otworzyć menedżera stanów, umożliwiając ustawienie jego czasu trwania."
                 }
             },
             "rollsTracker": {
@@ -334,6 +346,13 @@
                 "enabled": {
                     "name": "Włączone",
                     "hint": "Śledź rzuty, aby sprawdzić, czy naprawdę masz takiego pecha."
+                }
+            },
+            "teleport": {
+                "title": "Teleport tokenów",
+                "enabled": {
+                    "name": "Włączone",
+                    "hint": "Kliknięcie na planszy przy jednoczesnym przytrzymaniu zdefiniowanego powiązanego klawisza spowoduje natychmiastowe teleportowanie wybranych tokenów do lokalizacji bez konieczności podróżowania."
                 }
             }
         },

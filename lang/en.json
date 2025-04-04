@@ -26,6 +26,8 @@
                 "staff": "Staff",
                 "charges": "Charges"
             },
+            "gmOnly": "GM Only",
+            "reloadRequired": "Requires Reload",
             "sending": "Sending"
         },
         "keybindings": {
@@ -39,6 +41,16 @@
                 "manage": {
                     "name": "Manage Condition",
                     "hint": "Key held when dropping a condition to manage its duration."
+                }
+            },
+            "teleport": {
+                "teleport": {
+                    "name": "Teleport Tokens",
+                    "hint": "Key held while clicking on the scene to teleport all selected tokens."
+                },
+                "unselect": {
+                    "name": "Teleport Tokens (Unselect)",
+                    "hint": "Key held while clicking on the scene to teleport all selected tokens. Also unselect the tokens when pressing the keybind to give an unobstructed vision over the whole scene."
                 }
             }
         },
@@ -326,7 +338,7 @@
                 "title": "Condition Manager",
                 "enabled": {
                     "name": "Enabled",
-                    "hint": "Let you turn a regular condition into an effet+condition combo with duration."
+                    "hint": "Drag a condition while holding the defined keybind to open the condition manager allowing you to set its duration."
                 }
             },
             "rollsTracker": {
@@ -334,6 +346,13 @@
                 "enabled": {
                     "name": "Enabled",
                     "hint": "Track rolls to see if you are really that unlucky."
+                }
+            },
+            "teleport": {
+                "title": "Teleport Tokens",
+                "enabled": {
+                    "name": "Enabled",
+                    "hint": "Clicking on the board while holding the defined keybind will instanlty teleport the selected tokens to location without any travel."
                 }
             }
         },
